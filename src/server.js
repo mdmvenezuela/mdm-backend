@@ -29,10 +29,15 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get('/', (req, res) => {
+  res.status(200).send('MDM Backend Online');
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'MDM Server running' });
 });
+
 
 // Routes
 app.use('/api/auth', authRoutes);

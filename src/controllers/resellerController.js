@@ -91,11 +91,11 @@ try {
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.tecnoca.mdm/.DeviceAdminReceiver",
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": "https://github.com/yholfredys/mdm-backend/releases/download/v1/mdm.apk",
       //"android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": generateAPKChecksum(), // Opcional
-      "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
+      "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": true,
       "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
       "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
         "enrollment_token": token,
-        "server_url": process.env.SERVER_URL || 'http://192.168.0.130:3000',
+        "server_url": process.env.SERVER_URL || 'http://mdm-backend-production-bd3f.up.railway.app',
         "reseller_id": resellerId
       }
     };

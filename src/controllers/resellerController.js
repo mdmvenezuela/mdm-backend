@@ -1,5 +1,5 @@
 const pool = require('../config/database');
-const { generateEnrollmentToken, generateQRCode, getAPKChecksum } = require('../utils/helpers');
+const { generateEnrollmentToken, generateQRCode } = require('../utils/helpers');
 
 // Dashboard del Reseller
 exports.getDashboard = async (req, res) => {
@@ -50,6 +50,7 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     await client.query('BEGIN');
 
+    // Verificar que el reseller tenga licencias disponibles
     const availableLicense = await client.query(`
       SELECT * FROM licenses 
       WHERE reseller_id = $1 AND status = 'DISPONIBLE'
@@ -64,6 +65,9 @@ exports.generateEnrollmentQR = async (req, res) => {
     const license = availableLicense.rows[0];
     const token = generateEnrollmentToken();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const APK_URL = process.env.APK_URL || "https://mdm-backend-production-bd3f.up.railway.app/apk/mdm.apk";
+    const SERVER_URL = process.env.SERVER_URL || "https://mdm-backend-production-bd3f.up.railway.app";
+    const APK_CHECKSUM = process.env.APK_CHECKSUM;
 
     await client.query(`
       INSERT INTO enrollment_tokens (token, reseller_id, license_id, expires_at)
@@ -72,25 +76,19 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     await client.query('COMMIT');
 
-    // ⭐ CONFIGURACIÓN CORRECTA
-    const APK_URL = process.env.APK_URL || "https://github.com/mdmvenezuela/mdm-backend/releases/download/v2/mdm.apk";
-    const SERVER_URL = process.env.SERVER_URL || "https://mdm-backend-production-bd3f.up.railway.app";
-    const APK_CHECKSUM = process.env.APK_CHECKSUM;
-
-    // ⭐ QR SIN PROVISIONING_MODE Y SIN CHECKSUM
+    // CAMBIO IMPORTANTE: QR de Provisión de Android
     const qrData = {
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.tecnoca.mdm/.DeviceAdminReceiver",
+      "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.solvenca.mdm/.DeviceAdminReceiver",
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": APK_URL,
+      //"android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": await generateAPKChecksum(), // Opcional
       "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
       "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
       "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
         "enrollment_token": token,
-        "server_url": SERVER_URL,  // ⭐ Con https://
+        "server_url": SERVER_URL,
         "reseller_id": resellerId
       }
     };
-
-    console.log('✅ QR Data generado:', JSON.stringify(qrData, null, 2));
 
     const qrCode = await generateQRCode(qrData);
 

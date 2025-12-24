@@ -9,6 +9,7 @@ const authRoutes = require('./routes/authRoutes');
 const superAdminRoutes = require('./routes/superAdminRoutes');
 const resellerRoutes = require('./routes/resellerRoutes');
 const deviceRoutes = require('./routes/deviceRoutes');
+const migrate = require('./database/migrate');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -55,6 +56,16 @@ app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(500).json({ error: 'Error interno del servidor' });
 });
+
+(async () => {
+  try {
+    await migrate();
+    console.log('🧱 Base de datos lista');
+  } catch (error) {
+    console.error('🚨 Error preparando la base de datos:', error);
+    process.exit(1);
+  }
+})();
 
 app.listen(PORT, '0.0.0.0', () => {  // ⭐ Agregar '0.0.0.0'
   console.log(`

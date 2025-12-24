@@ -24,8 +24,15 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
 app.get('/apk/mdm.apk', (req, res) => {
+  const apkPath = path.join(__dirname, '..', 'public', 'apk', 'mdm.apk'); // <-- subir un nivel
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-  res.sendFile(path.join(__dirname, 'public/apk/mdm.apk'));
+
+  res.sendFile(apkPath, (err) => {
+    if (err) {
+      console.error('Error enviando APK:', err);
+      res.status(500).send('No se pudo descargar el APK');
+    }
+  });
 });
 
 

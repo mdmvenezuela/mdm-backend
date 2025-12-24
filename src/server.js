@@ -39,30 +39,6 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'MDM Server running' });
 });
 
-// Endpoint de debug
-app.get('/debug/qr/:resellerId', async (req, res) => {
-  const { resellerId } = req.params;
-  
-  const APK_URL = process.env.APK_URL || "URL_NO_CONFIGURADA";
-  const SERVER_URL = process.env.SERVER_URL || "URL_NO_CONFIGURADA";
-  
-  res.json({
-    apk_url: APK_URL,
-    server_url: SERVER_URL,
-    reseller_id: resellerId,
-    qr_data_preview: {
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.tecnoca.mdm/.DeviceAdminReceiver",
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": APK_URL,
-      "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
-      "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
-      "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
-        "enrollment_token": "PREVIEW_TOKEN",
-        "server_url": SERVER_URL,
-        "reseller_id": parseInt(resellerId)
-      }
-    }
-  });
-});
 
 // Routes
 app.use('/api/auth', authRoutes);

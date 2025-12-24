@@ -43,7 +43,6 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// Generar QR de enrolamiento
 exports.generateEnrollmentQR = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -51,7 +50,6 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Verificar que el reseller tenga licencias disponibles
     const availableLicense = await client.query(`
       SELECT * FROM licenses 
       WHERE reseller_id = $1 AND status = 'DISPONIBLE'
@@ -74,22 +72,26 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     await client.query('COMMIT');
 
-    
+    // ⭐ CONFIGURACIÓN CORRECTA
+    const APK_URL = process.env.APK_URL || "https://github.com/mdmvenezuela/mdm-backend/releases/download/v2/mdm.apk";
+    const SERVER_URL = process.env.SERVER_URL || "https://mdm-backend-production-bd3f.up.railway.app";
+    const APK_CHECKSUM = process.env.APK_CHECKSUM;
 
-    // CAMBIO IMPORTANTE: QR de Provisión de Android
+    // ⭐ QR SIN PROVISIONING_MODE Y SIN CHECKSUM
     const qrData = {
-      "android.app.extra.PROVISIONING_MODE": "DEVICE_OWNER",
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.tecnoca.mdm/.DeviceAdminReceiver",
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": "https://github.com/mdmvenezuela/mdm-backend/releases/download/v2/mdm.apk",
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": getAPKChecksum(),
+      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": APK_URL,
+      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": APK_CHECKSUM,
       "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": true,
       "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
       "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
         "enrollment_token": token,
-        "server_url": process.env.SERVER_URL || 'http://mdm-backend-production-bd3f.up.railway.app',
+        "server_url": SERVER_URL,  // ⭐ Con https://
         "reseller_id": resellerId
       }
     };
+
+    console.log('✅ QR Data generado:', JSON.stringify(qrData, null, 2));
 
     const qrCode = await generateQRCode(qrData);
 
@@ -99,7 +101,7 @@ exports.generateEnrollmentQR = async (req, res) => {
       qr_code: qrCode,
       expires_at: expiresAt,
       license_key: license.license_key,
-      download_url: "https://github.com/mdmvenezuela/mdm-backend/releases/download/v2/mdm.apk"
+      download_url: APK_URL
     });
   } catch (error) {
     await client.query('ROLLBACK');

@@ -1,5 +1,5 @@
 const pool = require('../config/database');
-const { generateEnrollmentToken, generateQRCode } = require('../utils/helpers');
+const { generateEnrollmentToken, generateQRCode, generateAPKChecksum } = require('../utils/helpers');
 
 // Dashboard del Reseller
 exports.getDashboard = async (req, res) => {
@@ -76,11 +76,24 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     await client.query('COMMIT');
 
+
+    let checksum = null;
+
+try {
+  checksum = generateAPKChecksum();
+} catch (err) {
+  console.error('❌ Error generando checksum:', err.message);
+  return res.status(500).json({
+    error: 'No se pudo generar el checksum del APK'
+  });
+}
+
     // CAMBIO IMPORTANTE: QR de Provisión de Android
     const qrData = {
+      "android.app.extra.PROVISIONING_MODE": "DEVICE_OWNER",
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.solvenca.mdm/.DeviceAdminReceiver",
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": APK_URL,
-      //"android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": await generateAPKChecksum(), // Opcional
+      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": checksum, // Opcional
       "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
       "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
       "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {

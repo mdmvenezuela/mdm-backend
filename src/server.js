@@ -23,6 +23,8 @@ app.use(express.urlencoded({ extended: true }));
 // Servir la carpeta public
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
+app.use('/apk', express.static(path.join(__dirname, '../public/apk')));
+
 app.get('/apk/mdm.apk', (req, res) => {
   const apkPath = path.join(__dirname, '..', 'public', 'apk', 'mdm.apk'); // <-- subir un nivel
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');

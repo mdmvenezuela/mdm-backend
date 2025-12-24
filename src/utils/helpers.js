@@ -43,11 +43,19 @@ const generateQRCode = async (data) => {
   }
 };
 
-const getAPKChecksum = () => {
-  if (!process.env.APK_CHECKSUM) {
-    throw new Error('APK_CHECKSUM no configurado');
+const generateAPKChecksum = () => {
+  const apkPath = path.resolve(__dirname, '../../public/apk/mdm.apk');
+
+  if (!fs.existsSync(apkPath)) {
+    throw new Error('APK no encontrado para generar checksum');
   }
-  return process.env.APK_CHECKSUM;
+
+  const fileBuffer = fs.readFileSync(apkPath);
+
+  return crypto
+    .createHash('sha256')
+    .update(fileBuffer)
+    .digest('base64'); // 👈 OBLIGATORIO
 };
 
 module.exports = {
@@ -57,5 +65,5 @@ module.exports = {
   generateLicenseKey,
   generateEnrollmentToken,
   generateQRCode,
-  getAPKChecksum
+  generateAPKChecksum
 };

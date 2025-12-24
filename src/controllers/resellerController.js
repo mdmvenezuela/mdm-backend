@@ -80,7 +80,7 @@ exports.generateEnrollmentQR = async (req, res) => {
     const qrData = {
       "android.app.extra.PROVISIONING_MODE": "DEVICE_OWNER",
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.tecnoca.mdm/.DeviceAdminReceiver",
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": "https://github.com/yholfredys/mdm-backend/releases/download/v1/mdm.apk",
+      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": "https://github.com/mdmvenezuela/mdm-backend/releases/download/v2/mdm.apk",
       "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": getAPKChecksum(),
       "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": true,
       "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
@@ -99,7 +99,7 @@ exports.generateEnrollmentQR = async (req, res) => {
       qr_code: qrCode,
       expires_at: expiresAt,
       license_key: license.license_key,
-      download_url: "https://github.com/yholfredys/mdm-backend/releases/download/v1/mdm.apk"
+      download_url: "https://github.com/mdmvenezuela/mdm-backend/releases/download/v2/mdm.apk"
     });
   } catch (error) {
     await client.query('ROLLBACK');

@@ -20,8 +20,8 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ⭐ AGREGAR ESTO ⭐
-// Servir archivos estáticos para el APK
-app.use('/apk', express.static(path.join(__dirname, '../public/apk')));
+// Servir la carpeta public
+app.use('/public', express.static(path.join(__dirname, 'public')));
 
 
 // Logging middleware

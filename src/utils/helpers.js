@@ -43,20 +43,11 @@ const generateQRCode = async (data) => {
   }
 };
 
-// Generar checksum SHA-256 del APK
-const generateAPKChecksum = () => {
-  const apkPath = path.resolve(__dirname, '../../public/apk/mdm.apk');
-
-  if (!fs.existsSync(apkPath)) {
-    throw new Error('APK no encontrado para generar checksum');
+const getAPKChecksum = () => {
+  if (!process.env.APK_CHECKSUM) {
+    throw new Error('APK_CHECKSUM no configurado');
   }
-
-  const fileBuffer = fs.readFileSync(apkPath);
-
-  return crypto
-    .createHash('sha256')
-    .update(fileBuffer)
-    .digest('base64'); // 👈 OBLIGATORIO
+  return process.env.APK_CHECKSUM;
 };
 
 module.exports = {
@@ -66,5 +57,5 @@ module.exports = {
   generateLicenseKey,
   generateEnrollmentToken,
   generateQRCode,
-  generateAPKChecksum
+  getAPKChecksum
 };

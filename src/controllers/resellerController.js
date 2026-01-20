@@ -1,6 +1,7 @@
 const pool = require('../config/database');
 const { generateEnrollmentToken, generateQRCode, generateAPKChecksum } = require('../utils/helpers');
 const { createEnrollmentToken } = require('../utils/androidManagement');
+const QRCode = require('qrcode');
 
 // Dashboard del Reseller
 exports.getDashboard = async (req, res) => {
@@ -48,10 +49,8 @@ exports.generateEnrollmentQR = async (req, res) => {
   const client = await pool.connect();
   try {
     const resellerId = req.user.id;
-
     await client.query('BEGIN');
 
-    // Verificar licencias disponibles
     const availableLicense = await client.query(`
       SELECT * FROM licenses 
       WHERE reseller_id = $1 AND status = 'DISPONIBLE'
@@ -65,13 +64,12 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     const license = availableLicense.rows[0];
     
-    // NUEVO: Crear enrollment token con Android Enterprise API
+    // Crear enrollment token con Android Enterprise API
     const enrollmentData = await createEnrollmentToken();
     
-    const token = enrollmentData.value; // Token generado por Google
+    const token = enrollmentData.value;
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    // Guardar el token en tu base de datos
     await client.query(`
       INSERT INTO enrollment_tokens (token, reseller_id, license_id, expires_at)
       VALUES ($1, $2, $3, $4)
@@ -79,13 +77,19 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     await client.query('COMMIT');
 
-    // El QR ya viene generado por Google en base64
-    const qrCodeBase64 = enrollmentData.qrCode;
+    // NUEVO: Generar imagen QR desde el JSON
+    const qrContent = enrollmentData.qrCode; // Este es el JSON string
+    const qrImageBase64 = await QRCode.toDataURL(qrContent, {
+      errorCorrectionLevel: 'L',
+      type: 'image/png',
+      width: 512,
+      margin: 1
+    });
 
     res.json({
       message: 'QR generado exitosamente con Android Enterprise',
       token: token,
-      qr_code: qrCodeBase64, // Ya es base64, listo para mostrar
+      qr_code: qrImageBase64, // Ahora SÍ es una imagen base64
       expires_at: expiresAt,
       license_key: license.license_key,
       enrollment_url: `https://enterprise.google.com/android/enroll?et=${token}`

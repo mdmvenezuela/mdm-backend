@@ -10,6 +10,7 @@ const superAdminRoutes = require('./routes/superAdminRoutes');
 const resellerRoutes = require('./routes/resellerRoutes');
 const deviceRoutes = require('./routes/deviceRoutes');
 const migrate = require('./database/migrate');
+const webhookRoutes = require('./routes/webhook');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +25,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
 app.use('/apk', express.static(path.join(__dirname, '../public/apk')));
+
+app.use('/api/webhook', webhookRoutes);
 
 app.get('/apk/mdm.apk', (req, res) => {
   const apkPath = path.join(__dirname, '..', 'public', 'apk', 'mdm.apk'); // <-- subir un nivel

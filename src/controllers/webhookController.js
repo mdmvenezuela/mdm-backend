@@ -1,8 +1,7 @@
 const pool = require('../config/database');
 
-exports.handlePubSubNotification = async (req, res) => {
+const handlePubSubNotification = async (req, res) => {
   try {
-    // Pub/Sub envía data en base64
     const pubsubMessage = req.body.message;
     
     if (!pubsubMessage || !pubsubMessage.data) {
@@ -10,20 +9,17 @@ exports.handlePubSubNotification = async (req, res) => {
       return res.status(400).json({ error: 'Invalid Pub/Sub message' });
     }
 
-    // Decodificar el mensaje
     const dataString = Buffer.from(pubsubMessage.data, 'base64').toString('utf-8');
     const notification = JSON.parse(dataString);
 
     console.log('📩 Notificación recibida:', notification);
 
-    // Procesar según el tipo de notificación
     if (notification.notificationType === 'ENROLLMENT') {
       await handleEnrollment(notification);
     } else if (notification.notificationType === 'COMPLIANCE_REPORT') {
       await handleComplianceReport(notification);
     }
 
-    // IMPORTANTE: Responder 200 para que Pub/Sub marque como procesado
     res.status(200).send('OK');
   } catch (error) {
     console.error('❌ Error procesando notificación:', error);
@@ -36,12 +32,11 @@ async function handleEnrollment(notification) {
   try {
     await client.query('BEGIN');
 
-    const deviceName = notification.deviceName; // enterprises/LC01l2uql7/devices/XXX
+    const deviceName = notification.deviceName;
     const enrollmentTokenName = notification.enrollmentTokenName;
 
     console.log('🆕 Nuevo enrollment:', deviceName);
 
-    // Buscar el token en tu BD
     let licenseId = null;
     let resellerId = null;
 
@@ -56,7 +51,6 @@ async function handleEnrollment(notification) {
         licenseId = token.license_id;
         resellerId = token.reseller_id;
 
-        // Marcar token como usado
         await client.query(
           'UPDATE enrollment_tokens SET is_used = true WHERE id = $1',
           [token.id]
@@ -64,14 +58,12 @@ async function handleEnrollment(notification) {
       }
     }
 
-    // Verificar si ya existe
     const existingDevice = await client.query(
       'SELECT * FROM devices WHERE google_device_name = $1',
       [deviceName]
     );
 
     if (existingDevice.rows.length === 0) {
-      // Crear dispositivo
       const deviceId = deviceName.split('/').pop();
       
       await client.query(`
@@ -89,7 +81,6 @@ async function handleEnrollment(notification) {
 
       console.log('✅ Dispositivo creado en BD');
 
-      // Actualizar licencia
       if (licenseId) {
         await client.query(`
           UPDATE licenses 
@@ -112,10 +103,9 @@ async function handleEnrollment(notification) {
 }
 
 async function handleComplianceReport(notification) {
-  // Aquí puedes manejar reportes de compliance
   console.log('📊 Reporte de compliance:', notification);
 }
 
 module.exports = {
-  handlePubSubNotification,
+  handlePubSubNotification
 };

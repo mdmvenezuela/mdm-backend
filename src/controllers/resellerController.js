@@ -28,13 +28,11 @@ exports.getDashboard = async (req, res) => {
   try {
     const resellerId = req.user.id;
 
-    // Información del reseller
     const resellerInfo = await pool.query(
       'SELECT * FROM resellers WHERE id = $1',
       [resellerId]
     );
 
-    // Estadísticas de licencias
     const licensesStats = await pool.query(`
       SELECT 
         COUNT(*) FILTER (WHERE status = 'DISPONIBLE') as disponibles,
@@ -44,7 +42,6 @@ exports.getDashboard = async (req, res) => {
       WHERE reseller_id = $1
     `, [resellerId]);
 
-    // Estadísticas de dispositivos
     const devicesStats = await pool.query(`
       SELECT 
         COUNT(*) as total,
@@ -85,7 +82,6 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     const license = availableLicense.rows[0];
     
-    // Crear enrollment token con Android Enterprise API
     const enrollmentData = await createEnrollmentToken();
     
     const token = enrollmentData.value;
@@ -98,7 +94,6 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Generar imagen QR desde el JSON
     const qrContent = enrollmentData.qrCode;
     const qrImageBase64 = await QRCode.toDataURL(qrContent, {
       errorCorrectionLevel: 'L',
@@ -172,7 +167,6 @@ exports.getDeviceDetail = async (req, res) => {
 
     const device = result.rows[0];
 
-    // Si tiene google_device_name, obtener info adicional de Google
     if (device.google_device_name) {
       try {
         const androidManagement = await getAndroidManagementClient();
@@ -202,7 +196,7 @@ exports.getDeviceDetail = async (req, res) => {
   }
 };
 
-// Bloquear dispositivo usando Android Management API
+// Bloquear dispositivo con mensaje personalizado
 exports.lockDevice = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -229,28 +223,58 @@ exports.lockDevice = async (req, res) => {
       return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
     }
 
-    // Llamar a Android Management API para bloquear
+    // Obtener info del reseller para personalizar mensaje
+    const resellerInfo = await client.query(
+      'SELECT company_name, support_phone, support_email FROM resellers WHERE id = $1',
+      [resellerId]
+    );
+
+    const reseller = resellerInfo.rows[0];
+
+    // Mensaje de bloqueo personalizado
+    const lockMessage = message || `
+╔════════════════════════════════╗
+║   DISPOSITIVO BLOQUEADO        ║
+╚════════════════════════════════╝
+
+⚠️ RAZÓN DEL BLOQUEO:
+Pago pendiente o mora en cuota
+
+📞 CONTACTO PARA DESBLOQUEAR:
+${reseller.company_name || 'Tu proveedor'}
+Teléfono: ${reseller.support_phone || 'Contacta a tu vendedor'}
+Email: ${reseller.support_email || ''}
+
+💳 REALIZA TU PAGO Y COMUNÍCATE
+Para desbloquear tu dispositivo de inmediato
+
+⏰ Este dispositivo permanecerá bloqueado
+hasta que se regularice el pago
+    `.trim();
+
+    // Llamar a Android Management API para bloquear CON MENSAJE
     const androidManagement = await getAndroidManagementClient();
     
     await androidManagement.enterprises.devices.issueCommand({
       name: device.google_device_name,
       requestBody: {
         type: 'LOCK',
-        lockReason: message || 'Dispositivo bloqueado por el administrador'
+        lockReason: lockMessage
       }
     });
 
     // Actualizar estado en BD
     await client.query(
-      'UPDATE devices SET status = $1 WHERE id = $2',
-      ['BLOQUEADO', id]
+      'UPDATE devices SET status = $1, lock_message = $2 WHERE id = $3',
+      ['BLOQUEADO', lockMessage, id]
     );
 
     await client.query('COMMIT');
 
     res.json({
-      message: 'Comando de bloqueo enviado exitosamente',
-      device_id: id
+      message: 'Dispositivo bloqueado exitosamente con mensaje personalizado',
+      device_id: id,
+      lock_message: lockMessage
     });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -264,12 +288,13 @@ exports.lockDevice = async (req, res) => {
   }
 };
 
-// Desbloquear dispositivo (limitado por Android Management API)
+// Desbloquear dispositivo con reset de password
 exports.unlockDevice = async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
     const resellerId = req.user.id;
+    const { new_password } = req.body;
 
     await client.query('BEGIN');
 
@@ -290,19 +315,36 @@ exports.unlockDevice = async (req, res) => {
       return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
     }
 
-    // Android Management API no tiene comando directo para "unlock"
-    // Solo podemos cambiar el estado en nuestra BD
+    // Generar password temporal de 6 dígitos si no se proporciona
+    const unlockPassword = new_password || Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Enviar comando para resetear password
+    const androidManagement = await getAndroidManagementClient();
+    
+    await androidManagement.enterprises.devices.issueCommand({
+      name: device.google_device_name,
+      requestBody: {
+        type: 'RESET_PASSWORD',
+        resetPasswordFlags: ['REQUIRE_ENTRY'],
+        newPassword: unlockPassword
+      }
+    });
+
+    // Actualizar estado en BD
     await client.query(
-      'UPDATE devices SET status = $1 WHERE id = $2',
-      ['ACTIVO', id]
+      'UPDATE devices SET status = $1, unlock_code = $2, lock_message = NULL WHERE id = $3',
+      ['ACTIVO', unlockPassword, id]
     );
 
     await client.query('COMMIT');
 
     res.json({
-      message: 'Dispositivo marcado como activo en el sistema',
+      message: 'Dispositivo desbloqueado exitosamente',
       device_id: id,
-      note: 'El usuario debe desbloquear el dispositivo manualmente con su PIN. Android Management API no permite desbloqueo remoto automático por seguridad.'
+      unlock_code: unlockPassword,
+      instructions: `Comunica al cliente este código de desbloqueo: ${unlockPassword}`,
+      client_name: device.client_name,
+      client_phone: device.client_phone
     });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -342,7 +384,6 @@ exports.wipeDevice = async (req, res) => {
       return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
     }
 
-    // Enviar comando de factory reset
     const androidManagement = await getAndroidManagementClient();
     
     await androidManagement.enterprises.devices.issueCommand({
@@ -355,9 +396,9 @@ exports.wipeDevice = async (req, res) => {
     await client.query('COMMIT');
 
     res.json({
-      message: 'Comando de reinicio enviado. Para factory reset completo, elimina el dispositivo desde la consola de Google.',
+      message: 'Comando de reinicio enviado',
       device_id: id,
-      warning: 'El factory reset remoto eliminará todos los datos del dispositivo'
+      warning: 'Para factory reset completo, elimina el dispositivo desde la consola de Google'
     });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -392,14 +433,12 @@ exports.releaseDevice = async (req, res) => {
 
     const device = deviceResult.rows[0];
 
-    // Cambiar estado de la licencia a VINCULADA
     await client.query(`
       UPDATE licenses 
       SET status = 'VINCULADA', device_imei = $1
       WHERE id = $2
     `, [device.imei, device.license_id]);
 
-    // Cambiar estado del dispositivo a LIBERADO
     await client.query(
       'UPDATE devices SET status = $1 WHERE id = $2',
       ['LIBERADO', id]
@@ -422,7 +461,7 @@ exports.releaseDevice = async (req, res) => {
   }
 };
 
-// Obtener ubicación e información del dispositivo desde Google
+// Obtener ubicación e información del dispositivo
 exports.getDeviceLocation = async (req, res) => {
   try {
     const { id } = req.params;
@@ -443,7 +482,6 @@ exports.getDeviceLocation = async (req, res) => {
       return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
     }
 
-    // Obtener info del dispositivo desde Google
     const androidManagement = await getAndroidManagementClient();
     
     const deviceInfo = await androidManagement.enterprises.devices.get({
@@ -459,7 +497,7 @@ exports.getDeviceLocation = async (req, res) => {
       software_info: deviceInfo.data.softwareInfo,
       network_info: deviceInfo.data.networkInfo,
       memory_info: deviceInfo.data.memoryInfo,
-      note: 'La ubicación GPS precisa requiere configuración específica en la política y permisos del dispositivo'
+      note: 'La ubicación GPS precisa requiere configuración en la política'
     });
   } catch (error) {
     console.error('Error obteniendo información:', error);
@@ -470,7 +508,7 @@ exports.getDeviceLocation = async (req, res) => {
   }
 };
 
-// Historial de ubicaciones (ahora deprecado - Android Management no guarda historial)
+// Historial de ubicaciones (deprecado)
 exports.getDeviceLocationHistory = async (req, res) => {
   try {
     const { id } = req.params;
@@ -487,7 +525,7 @@ exports.getDeviceLocationHistory = async (req, res) => {
 
     res.json({ 
       history: [],
-      note: 'El historial de ubicaciones no está disponible con Android Management API. Solo se puede obtener el estado actual del dispositivo.'
+      note: 'El historial de ubicaciones no está disponible con Android Management API'
     });
   } catch (error) {
     console.error('Error obteniendo historial:', error);

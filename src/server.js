@@ -11,6 +11,7 @@ const resellerRoutes = require('./routes/resellerRoutes');
 const deviceRoutes = require('./routes/deviceRoutes');
 const migrate = require('./database/migrate');
 const webhookRoutes = require('./routes/webhook');
+const contactRoutes = require('./routes/contact');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -55,6 +56,9 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'MDM Server running' });
 });
+
+// formulario de contacto
+app.use('/api', contactRoutes);
 
 
 // Routes

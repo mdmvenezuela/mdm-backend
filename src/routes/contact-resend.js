@@ -1,38 +1,17 @@
 // ===================================================
-// ENDPOINT DE CONTACTO PARA EL LANDING PAGE
-// Optimizado para Google Workspace (admin@solvenca.lat)
-// Archivo: routes/contact.js (o el nombre que uses)
+// ENDPOINT DE CONTACTO CON RESEND
+// Solución alternativa a SMTP que evita problemas de firewall
+// Archivo: routes/contact-resend.js
 // ===================================================
 
 const express = require('express');
 const router = express.Router();
-const nodemailer = require('nodemailer'); // Para enviar emails
+const { Resend } = require('resend');
 
-// Configuración del transportador de email para Google Workspace
-// IMPORTANTE: Configura estas variables de entorno en tu .env
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT) || 465,
-  secure: false, // true para puerto 465, false para otros puertos
-  auth: {
-    user: process.env.SMTP_USER, // admin@solvenca.lat
-    pass: process.env.SMTP_PASS  // Contraseña de aplicación de Google Workspace
-  },
-  // Opciones adicionales para mejor compatibilidad con Google Workspace
-  tls: {
-    rejectUnauthorized: true,
-    minVersion: 'TLSv1.2'
-  }
-});
+// Inicializar Resend con tu API key
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Verificar conexión SMTP al iniciar (opcional pero recomendado)
-transporter.verify(function(error, success) {
-  if (error) {
-    console.error('❌ Error de conexión SMTP:', error);
-  } else {
-    console.log('✅ Servidor SMTP listo para enviar emails desde', process.env.SMTP_USER);
-  }
-});
+console.log('✅ Router de contacto (Resend) cargado');
 
 /**
  * POST /api/contact
@@ -57,7 +36,7 @@ router.post('/contact', async (req, res) => {
       });
     }
 
-    // Prevenir inyección de scripts básica
+    // Sanitizar datos
     const sanitize = (str) => str.replace(/[<>]/g, '');
     const sanitizedData = {
       name: sanitize(name),
@@ -68,13 +47,6 @@ router.post('/contact', async (req, res) => {
       message: sanitize(message)
     };
 
-    // Guardar en base de datos (opcional)
-    // const contact = await Contact.create({
-    //   ...sanitizedData,
-    //   created_at: new Date()
-    // });
-
-    // Preparar el email
     const inquiryTypes = {
       pilot: 'Pilot Program',
       demo: 'Request Demo',
@@ -82,7 +54,8 @@ router.post('/contact', async (req, res) => {
       general: 'General Inquiry'
     };
 
-    const emailHTML = `
+    // Email HTML para el equipo
+    const teamEmailHTML = `
       <!DOCTYPE html>
       <html>
       <head>
@@ -221,32 +194,21 @@ router.post('/contact', async (req, res) => {
       </html>
     `;
 
-    // Email al equipo (tu correo admin@solvenca.lat)
-    const mailToTeam = await transporter.sendMail({
-      from: `"SMDM Landing Page" <${process.env.SMTP_USER}>`,
-      to: process.env.CONTACT_EMAIL || process.env.SMTP_USER,
-      replyTo: sanitizedData.email, // Permite responder directamente al cliente
+    // Enviar email al equipo
+    const { data: teamEmail, error: teamError } = await resend.emails.send({
+      from: 'SMDM Landing Page <noreply@solvenca.lat>', // Debe ser tu dominio verificado
+      to: [process.env.CONTACT_EMAIL || 'admin@solvenca.lat'],
+      replyTo: sanitizedData.email,
       subject: `🔔 Nuevo contacto: ${inquiryTypes[sanitizedData.inquiry]} - ${sanitizedData.company}`,
-      html: emailHTML,
-      // Agregar texto plano como fallback
-      text: `
-Nuevo mensaje de contacto - SMDM
-
-Nombre: ${sanitizedData.name}
-Email: ${sanitizedData.email}
-Empresa: ${sanitizedData.company}
-${sanitizedData.phone ? `Teléfono: ${sanitizedData.phone}\n` : ''}
-Tipo de Consulta: ${inquiryTypes[sanitizedData.inquiry]}
-
-Mensaje:
-${sanitizedData.message}
-
----
-Recibido: ${new Date().toLocaleString('es-VE')}
-      `.trim()
+      html: teamEmailHTML
     });
 
-    console.log('✅ Email enviado al equipo. Message ID:', mailToTeam.messageId);
+    if (teamError) {
+      console.error('❌ Error enviando email al equipo:', teamError);
+      throw teamError;
+    }
+
+    console.log('✅ Email enviado al equipo. ID:', teamEmail.id);
 
     // Email de confirmación al cliente
     const confirmationHTML = `
@@ -307,10 +269,6 @@ Recibido: ${new Date().toLocaleString('es-VE')}
             color: #667eea;
             text-decoration: none;
           }
-          .contact-info {
-            margin-top: 15px;
-            font-size: 13px;
-          }
         </style>
       </head>
       <body>
@@ -342,7 +300,7 @@ Recibido: ${new Date().toLocaleString('es-VE')}
           <div class="footer">
             <p style="margin: 0 0 15px 0;"><strong>SMART SOLUCIONES TECNOLÓGICAS C.A.</strong></p>
             <p style="margin: 0;">Enterprise Mobile Device Management Solutions</p>
-            <div class="contact-info">
+            <div style="margin-top: 15px;">
               <p style="margin: 15px 0 5px 0;">
                 🌐 <a href="https://www.solvenca.lat">www.solvenca.lat</a><br>
                 📧 <a href="mailto:admin@solvenca.lat">admin@solvenca.lat</a><br>
@@ -358,33 +316,22 @@ Recibido: ${new Date().toLocaleString('es-VE')}
       </html>
     `;
 
-    const mailToClient = await transporter.sendMail({
-      from: `"SMART Soluciones Tecnológicas" <${process.env.SMTP_USER}>`,
-      to: sanitizedData.email,
+    const { data: clientEmail, error: clientError } = await resend.emails.send({
+      from: 'SMART Soluciones Tecnológicas <noreply@solvenca.lat>',
+      to: [sanitizedData.email],
       subject: 'Gracias por contactarnos - SMART Soluciones',
-      html: confirmationHTML,
-      text: `
-Hola ${sanitizedData.name},
-
-Hemos recibido tu mensaje sobre ${inquiryTypes[sanitizedData.inquiry]} y queremos agradecerte por tu interés en nuestras soluciones de Mobile Device Management.
-
-Nuestro equipo revisará tu consulta y te responderemos lo antes posible.
-
-Saludos cordiales,
-Equipo de SMART Soluciones Tecnológicas
-
----
-SMART SOLUCIONES TECNOLÓGICAS C.A.
-www.solvenca.lat
-admin@solvenca.lat
-Venezuela
-      `.trim()
+      html: confirmationHTML
     });
 
-    console.log('✅ Email de confirmación enviado al cliente. Message ID:', mailToClient.messageId);
+    if (clientError) {
+      console.error('⚠️ Error enviando confirmación al cliente:', clientError);
+      // No fallar si el email de confirmación falla
+    } else {
+      console.log('✅ Email de confirmación enviado al cliente. ID:', clientEmail.id);
+    }
 
-    // Log para debugging
-    console.log('📧 Contacto procesado exitosamente:', {
+    // Log del contacto
+    console.log('📧 Contacto procesado:', {
       name: sanitizedData.name,
       email: sanitizedData.email,
       company: sanitizedData.company,
@@ -399,13 +346,6 @@ Venezuela
 
   } catch (error) {
     console.error('❌ Error en endpoint de contacto:', error);
-    
-    // Logging más detallado para debugging
-    if (error.code === 'EAUTH') {
-      console.error('Error de autenticación SMTP. Verifica SMTP_USER y SMTP_PASS');
-    } else if (error.code === 'ECONNECTION') {
-      console.error('Error de conexión SMTP. Verifica SMTP_HOST y SMTP_PORT');
-    }
     
     res.status(500).json({ 
       error: 'Error al enviar el mensaje. Por favor intenta nuevamente o contáctanos directamente a admin@solvenca.lat' 

@@ -11,7 +11,7 @@ const resellerRoutes = require('./routes/resellerRoutes');
 const deviceRoutes = require('./routes/deviceRoutes');
 const migrate = require('./database/migrate');
 const webhookRoutes = require('./routes/webhook');
-const contactRoutes = require('./routes/contact');
+const contactRoutes = require('./routes/contact-resend');
 
 const app = express();
 const PORT = process.env.PORT || 3000;

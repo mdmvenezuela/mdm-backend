@@ -12,7 +12,7 @@ const nodemailer = require('nodemailer'); // Para enviar emails
 // IMPORTANTE: Configura estas variables de entorno en tu .env
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT) || 587,
+  port: parseInt(process.env.SMTP_PORT) || 465,
   secure: false, // true para puerto 465, false para otros puertos
   auth: {
     user: process.env.SMTP_USER, // admin@solvenca.lat

@@ -61,6 +61,13 @@ app.get('/health', (req, res) => {
 app.use('/api', contactRoutes);
 
 
+//temporal para push/sub
+app.post('/api/webhook/android-enterpris', (req, res) => {
+  console.log('Webhook recibido');
+  res.sendStatus(200);
+});
+
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', superAdminRoutes);

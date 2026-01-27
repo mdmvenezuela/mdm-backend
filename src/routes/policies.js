@@ -1,22 +1,20 @@
 // ===================================================
 // ENDPOINTS DE GESTIÓN DE POLÍTICAS ANDROID ENTERPRISE
-// Versión final adaptada a tu estructura de BD
+// Versión que trabaja directamente con Android Enterprise API
 // Archivo: routes/policies.js
 // ===================================================
 
 const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
-const pool = require('../config/database'); // Tu conexión a PostgreSQL
-const { authenticateToken } = require('../middleware/auth'); // Ajusta la ruta
+const pool = require('../config/database');
+const { authenticateToken } = require('../middleware/auth');
 
 // Middleware para verificar que el usuario sea super_admin
 const authenticateSuperAdmin = async (req, res, next) => {
   try {
-    // Primero verificar el token (esto llena req.user)
     await authenticateToken(req, res, () => {});
     
-    // Verificar que sea super_admin
     if (req.user.role !== 'super_admin') {
       return res.status(403).json({ 
         error: 'Acceso denegado. Solo super administradores pueden gestionar políticas.' 
@@ -44,7 +42,6 @@ function getGoogleCredentials() {
     const jsonCredentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
     const credentials = JSON.parse(jsonCredentials);
     
-    console.log('✅ Credenciales de Google cargadas desde base64');
     return credentials;
     
   } catch (error) {
@@ -53,9 +50,6 @@ function getGoogleCredentials() {
   }
 }
 
-// ===================================================
-// HELPER: Obtener cliente autenticado de Google
-// ===================================================
 function getGoogleAuthClient() {
   const credentials = getGoogleCredentials();
   
@@ -69,40 +63,93 @@ function getGoogleAuthClient() {
 
 /**
  * GET /admin/policies
- * Obtener todas las políticas
+ * Listar todas las políticas desde Android Enterprise
  */
 router.get('/admin/policies', authenticateSuperAdmin, async (req, res) => {
   try {
-    const adminId = req.user.id;
+    const auth = getGoogleAuthClient();
+    
+    const androidmanagement = google.androidmanagement({
+      version: 'v1',
+      auth: auth
+    });
 
-    // Obtener políticas de la BD (PostgreSQL)
-    const result = await pool.query(`
-      SELECT 
-        p.*,
-        COUNT(d.id) as device_count
-      FROM policies p
-      LEFT JOIN devices d ON d.policy_id = p.id
-      WHERE p.super_admin_id = $1
-      GROUP BY p.id
-      ORDER BY p.is_default DESC, p.created_at DESC
-    `, [adminId]);
+    const enterpriseName = process.env.ANDROID_ENTERPRISE_NAME;
 
-    res.json({ policies: result.rows });
+    if (!enterpriseName) {
+      return res.status(500).json({ 
+        error: 'ANDROID_ENTERPRISE_NAME no está configurada' 
+      });
+    }
+
+    // Obtener políticas directamente de Android Enterprise
+    const response = await androidmanagement.enterprises.policies.list({
+      parent: enterpriseName
+    });
+
+    const androidPolicies = response.data.policies || [];
+
+    // Transformar las políticas al formato que espera el frontend
+    const formattedPolicies = androidPolicies.map(policy => {
+      // Extraer configuración de la política de Android
+      const configuration = {
+        passwordRequired: !!policy.passwordRequirements,
+        passwordMinLength: policy.passwordRequirements?.passwordMinimumLength || 6,
+        passwordQuality: policy.passwordRequirements?.passwordQuality || 'NUMERIC',
+        maximumTimeToLock: policy.maximumTimeToLock || null,
+        encryptionPolicy: policy.encryptionPolicy || 'ENABLED_WITHOUT_PASSWORD',
+        cameraDisabled: policy.cameraDisabled || false,
+        screenCaptureDisabled: policy.screenCaptureDisabled || false,
+        bluetoothDisabled: policy.bluetoothDisabled || false,
+        usbFileTransferDisabled: policy.usbFileTransferDisabled || false,
+        factoryResetDisabled: policy.factoryResetDisabled || false,
+        installUnknownSourcesAllowed: policy.installUnknownSourcesAllowed || false,
+        wifiConfigsLockdownEnabled: policy.wifiConfigsLockdownEnabled || false,
+        statusBarDisabled: policy.statusBarDisabled || false,
+        keyguardDisabled: policy.keyguardDisabled || false,
+        kioskMode: !!policy.kioskCustomization,
+        kioskApps: policy.persistentPreferredActivities?.map(a => a.receiverActivity) || [],
+        allowedApps: policy.applications?.filter(a => a.installType === 'AVAILABLE').map(a => a.packageName) || [],
+        blockedApps: policy.applications?.filter(a => a.installType === 'BLOCKED').map(a => a.packageName) || []
+      };
+
+      // Extraer el nombre legible de la política
+      const policyNameParts = policy.name.split('/');
+      const policyId = policyNameParts[policyNameParts.length - 1];
+      
+      return {
+        id: policyId,
+        name: policyId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+        description: `Política de Android Enterprise (Versión ${policy.version || '1'})`,
+        configuration: JSON.stringify(configuration),
+        android_policy_name: policy.name,
+        is_default: policyId === 'default',
+        device_count: 0,
+        created_at: null,
+        updated_at: null
+      };
+    });
+
+    console.log(`✅ Listadas ${formattedPolicies.length} políticas de Android Enterprise`);
+
+    res.json({ policies: formattedPolicies });
 
   } catch (error) {
-    console.error('Error fetching policies:', error);
-    res.status(500).json({ error: 'Error obteniendo políticas' });
+    console.error('Error fetching policies from Android Enterprise:', error);
+    res.status(500).json({ 
+      error: 'Error obteniendo políticas de Android Enterprise',
+      details: error.message 
+    });
   }
 });
 
 /**
  * POST /admin/policy
- * Crear nueva política
+ * Crear nueva política en Android Enterprise
  */
 router.post('/admin/policy', authenticateSuperAdmin, async (req, res) => {
   try {
     const { name, description, configuration, is_default } = req.body;
-    const adminId = req.user.id;
 
     // Validar datos
     if (!name || !configuration) {
@@ -119,40 +166,15 @@ router.post('/admin/policy', authenticateSuperAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Configuración JSON inválida' });
     }
 
-    // Si se marca como default, quitar el flag de las demás
-    if (is_default) {
-      await pool.query(
-        'UPDATE policies SET is_default = false WHERE admin_id = $1',
-        [adminId]
-      );
-    }
-
-    // Crear la política en la BD
-    const result = await pool.query(`
-      INSERT INTO policies (
-        admin_id, name, description, configuration, is_default, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-      RETURNING id
-    `, [adminId, name, description, JSON.stringify(parsedConfig), is_default || false]);
-
-    const policyId = result.rows[0].id;
-
     // Crear la política en Android Enterprise
     const androidPolicy = await createAndroidEnterprisePolicy(parsedConfig, name);
 
-    // Guardar el policy_name de Android Enterprise
-    await pool.query(
-      'UPDATE policies SET android_policy_name = $1 WHERE id = $2',
-      [androidPolicy.name, policyId]
-    );
-
-    console.log('✅ Política creada:', name);
+    console.log('✅ Política creada en Android Enterprise:', androidPolicy.name);
 
     res.json({ 
       success: true, 
-      policy_id: policyId,
       android_policy_name: androidPolicy.name,
-      message: 'Política creada exitosamente' 
+      message: 'Política creada exitosamente en Android Enterprise' 
     });
 
   } catch (error) {
@@ -166,25 +188,15 @@ router.post('/admin/policy', authenticateSuperAdmin, async (req, res) => {
 
 /**
  * PUT /admin/policy/:id
- * Actualizar política existente
+ * Actualizar política existente en Android Enterprise
  */
 router.put('/admin/policy/:id', authenticateSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, configuration, is_default } = req.body;
-    const adminId = req.user.id;
 
-    // Verificar que la política pertenece al admin
-    const policyResult = await pool.query(
-      'SELECT * FROM policies WHERE id = $1 AND admin_id = $2',
-      [id, adminId]
-    );
-
-    if (policyResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Política no encontrada' });
-    }
-
-    const policy = policyResult.rows[0];
+    const enterpriseName = process.env.ANDROID_ENTERPRISE_NAME;
+    const policyName = `${enterpriseName}/policies/${id}`;
 
     // Validar configuración
     let parsedConfig;
@@ -196,36 +208,14 @@ router.put('/admin/policy/:id', authenticateSuperAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Configuración JSON inválida' });
     }
 
-    // Si se marca como default, quitar el flag de las demás
-    if (is_default) {
-      await pool.query(
-        'UPDATE policies SET is_default = false WHERE admin_id = $1 AND id != $2',
-        [adminId, id]
-      );
-    }
-
-    // Actualizar en BD
-    await pool.query(`
-      UPDATE policies 
-      SET name = $1, description = $2, configuration = $3, is_default = $4, updated_at = NOW()
-      WHERE id = $5
-    `, [name, description, JSON.stringify(parsedConfig), is_default || false, id]);
-
     // Actualizar en Android Enterprise
-    const androidPolicy = await updateAndroidEnterprisePolicy(
-      policy.android_policy_name,
-      parsedConfig,
-      name
-    );
+    await updateAndroidEnterprisePolicy(policyName, parsedConfig, name);
 
-    // Aplicar a todos los dispositivos que usan esta política
-    await applyPolicyToDevices(id);
-
-    console.log('✅ Política actualizada:', name);
+    console.log('✅ Política actualizada en Android Enterprise:', policyName);
 
     res.json({ 
       success: true,
-      message: 'Política actualizada exitosamente. Los cambios se aplicarán a los dispositivos.' 
+      message: 'Política actualizada exitosamente en Android Enterprise' 
     });
 
   } catch (error) {
@@ -239,65 +229,30 @@ router.put('/admin/policy/:id', authenticateSuperAdmin, async (req, res) => {
 
 /**
  * DELETE /admin/policy/:id
- * Eliminar política
+ * Eliminar política de Android Enterprise
  */
 router.delete('/admin/policy/:id', authenticateSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const adminId = req.user.id;
 
-    // Verificar que la política pertenece al admin
-    const policyResult = await pool.query(
-      'SELECT * FROM policies WHERE id = $1 AND admin_id = $2',
-      [id, adminId]
-    );
-
-    if (policyResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Política no encontrada' });
-    }
-
-    const policy = policyResult.rows[0];
-
-    // No permitir eliminar la política por defecto
-    if (policy.is_default) {
+    // No permitir eliminar la política default
+    if (id === 'default') {
       return res.status(400).json({ 
-        error: 'No puedes eliminar la política por defecto. Marca otra como defecto primero.' 
+        error: 'No puedes eliminar la política default de Android Enterprise.' 
       });
     }
 
-    // Obtener la política por defecto
-    const defaultPolicyResult = await pool.query(
-      'SELECT id FROM policies WHERE admin_id = $1 AND is_default = true',
-      [adminId]
-    );
-
-    if (defaultPolicyResult.rows.length === 0) {
-      return res.status(400).json({ 
-        error: 'Debes tener una política por defecto antes de eliminar otras' 
-      });
-    }
-
-    const defaultPolicyId = defaultPolicyResult.rows[0].id;
-
-    // Mover dispositivos que usan esta política a la política por defecto
-    await pool.query(
-      'UPDATE devices SET policy_id = $1 WHERE policy_id = $2',
-      [defaultPolicyId, id]
-    );
+    const enterpriseName = process.env.ANDROID_ENTERPRISE_NAME;
+    const policyName = `${enterpriseName}/policies/${id}`;
 
     // Eliminar la política de Android Enterprise
-    if (policy.android_policy_name) {
-      await deleteAndroidEnterprisePolicy(policy.android_policy_name);
-    }
+    await deleteAndroidEnterprisePolicy(policyName);
 
-    // Eliminar de BD
-    await pool.query('DELETE FROM policies WHERE id = $1', [id]);
-
-    console.log('✅ Política eliminada:', policy.name);
+    console.log('✅ Política eliminada de Android Enterprise:', policyName);
 
     res.json({ 
       success: true,
-      message: 'Política eliminada. Los dispositivos ahora usan la política por defecto.' 
+      message: 'Política eliminada de Android Enterprise' 
     });
 
   } catch (error) {
@@ -367,7 +322,6 @@ async function createAndroidEnterprisePolicy(config, name) {
       requestBody: policy
     });
 
-    console.log('✅ Política creada en Android Enterprise:', response.data.name);
     return response.data;
 
   } catch (error) {
@@ -422,7 +376,6 @@ async function updateAndroidEnterprisePolicy(policyName, config, displayName) {
       requestBody: policy
     });
 
-    console.log('✅ Política actualizada en Android Enterprise');
     return response.data;
 
   } catch (error) {
@@ -448,6 +401,7 @@ async function deleteAndroidEnterprisePolicy(policyName) {
 
   } catch (error) {
     console.error('❌ Error eliminando política:', error.message);
+    throw error;
   }
 }
 
@@ -507,59 +461,6 @@ function buildPasswordPolicy(config) {
     passwordMinimumNumeric: config.passwordQuality === 'NUMERIC' ? 1 : undefined,
     passwordMinimumSymbols: config.passwordQuality === 'COMPLEX' ? 1 : undefined
   };
-}
-
-async function applyPolicyToDevices(policyId) {
-  try {
-    const devicesResult = await pool.query(
-      'SELECT google_device_name FROM devices WHERE policy_id = $1 AND google_device_name IS NOT NULL',
-      [policyId]
-    );
-
-    const devices = devicesResult.rows;
-
-    if (devices.length === 0) {
-      console.log('No hay dispositivos usando esta política');
-      return;
-    }
-
-    const auth = getGoogleAuthClient();
-    
-    const androidmanagement = google.androidmanagement({
-      version: 'v1',
-      auth: auth
-    });
-
-    const policyResult = await pool.query(
-      'SELECT android_policy_name FROM policies WHERE id = $1',
-      [policyId]
-    );
-
-    if (policyResult.rows.length === 0 || !policyResult.rows[0].android_policy_name) {
-      return;
-    }
-
-    const policyName = policyResult.rows[0].android_policy_name;
-
-    for (const device of devices) {
-      try {
-        await androidmanagement.enterprises.devices.patch({
-          name: device.google_device_name,
-          updateMask: 'policyName',
-          requestBody: {
-            policyName: policyName
-          }
-        });
-
-        console.log('✅ Política aplicada a dispositivo:', device.google_device_name);
-      } catch (err) {
-        console.error('Error aplicando política a dispositivo:', device.google_device_name, err.message);
-      }
-    }
-
-  } catch (error) {
-    console.error('Error aplicando políticas a dispositivos:', error.message);
-  }
 }
 
 module.exports = router;

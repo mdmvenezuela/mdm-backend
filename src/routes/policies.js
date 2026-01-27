@@ -1,12 +1,36 @@
 // ===================================================
 // ENDPOINTS DE GESTIÓN DE POLÍTICAS ANDROID ENTERPRISE
-// Versión actualizada para Railway con credenciales en Base64
+// Versión actualizada con autenticación correcta
 // Archivo: routes/policies.js
 // ===================================================
 
 const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
+const db = require('../database/db'); // Ajusta la ruta según tu estructura
+
+// ===================================================
+// IMPORTAR TU MIDDLEWARE DE AUTENTICACIÓN REAL
+// ===================================================
+const { authenticateToken } = require('../middleware/auth'); // Ajusta la ruta
+
+// Middleware para verificar que el usuario sea admin
+const authenticateAdmin = async (req, res, next) => {
+  try {
+    // Primero verificar el token
+    await authenticateToken(req, res, () => {});
+    
+    // Verificar que sea admin o superadmin
+    if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+      return res.status(403).json({ error: 'Acceso denegado. Solo administradores.' });
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Error en authenticateAdmin:', error);
+    return res.status(401).json({ error: 'No autorizado' });
+  }
+};
 
 // ===================================================
 // HELPER: Obtener credenciales de Google desde Base64
@@ -19,7 +43,6 @@ function getGoogleCredentials() {
       throw new Error('GOOGLE_APPLICATION_CREDENTIALS_BASE64 no está configurada');
     }
 
-    // Decodificar de base64 a JSON
     const jsonCredentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
     const credentials = JSON.parse(jsonCredentials);
     
@@ -46,12 +69,6 @@ function getGoogleAuthClient() {
   return auth;
 }
 
-// Middleware de autenticación del admin
-const authenticateAdmin = (req, res, next) => {
-  // Tu middleware de autenticación existente
-  next();
-};
-
 /**
  * GET /admin/policies
  * Obtener todas las políticas
@@ -61,7 +78,7 @@ router.get('/admin/policies', authenticateAdmin, async (req, res) => {
     const adminId = req.user.id;
 
     // Obtener políticas de la BD
-    const policies = await db.query(`
+    const [policies] = await db.query(`
       SELECT 
         p.*,
         COUNT(d.id) as device_count
@@ -113,7 +130,7 @@ router.post('/admin/policy', authenticateAdmin, async (req, res) => {
     }
 
     // Crear la política en la BD
-    const result = await db.query(`
+    const [result] = await db.query(`
       INSERT INTO policies (
         admin_id, name, description, configuration, is_default, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, NOW(), NOW())
@@ -159,7 +176,7 @@ router.put('/admin/policy/:id', authenticateAdmin, async (req, res) => {
     const adminId = req.user.id;
 
     // Verificar que la política pertenece al admin
-    const policy = await db.query(
+    const [policy] = await db.query(
       'SELECT * FROM policies WHERE id = ? AND admin_id = ?',
       [id, adminId]
     );
@@ -229,7 +246,7 @@ router.delete('/admin/policy/:id', authenticateAdmin, async (req, res) => {
     const adminId = req.user.id;
 
     // Verificar que la política pertenece al admin
-    const policy = await db.query(
+    const [policy] = await db.query(
       'SELECT * FROM policies WHERE id = ? AND admin_id = ?',
       [id, adminId]
     );
@@ -246,7 +263,7 @@ router.delete('/admin/policy/:id', authenticateAdmin, async (req, res) => {
     }
 
     // Obtener la política por defecto
-    const defaultPolicy = await db.query(
+    const [defaultPolicy] = await db.query(
       'SELECT id FROM policies WHERE admin_id = ? AND is_default = 1',
       [adminId]
     );
@@ -291,9 +308,6 @@ router.delete('/admin/policy/:id', authenticateAdmin, async (req, res) => {
 // FUNCIONES HELPER PARA ANDROID ENTERPRISE
 // ===================================================
 
-/**
- * Crear política en Android Enterprise
- */
 async function createAndroidEnterprisePolicy(config, name) {
   try {
     const auth = getGoogleAuthClient();
@@ -309,7 +323,6 @@ async function createAndroidEnterprisePolicy(config, name) {
       throw new Error('ANDROID_ENTERPRISE_NAME no está configurada');
     }
 
-    // Construir la política según la configuración
     const policyName = `${enterpriseName}/policies/${name.replace(/\s+/g, '_').toLowerCase()}_${Date.now()}`;
     
     const policy = {
@@ -328,7 +341,6 @@ async function createAndroidEnterprisePolicy(config, name) {
       keyguardDisabled: config.keyguardDisabled || false
     };
 
-    // Agregar configuración de Kiosk si está habilitado
     if (config.kioskMode && config.kioskApps && config.kioskApps.length > 0) {
       policy.kioskCustomization = {
         deviceSettings: 'SETTINGS_ACCESS_ALLOWED',
@@ -359,9 +371,6 @@ async function createAndroidEnterprisePolicy(config, name) {
   }
 }
 
-/**
- * Actualizar política en Android Enterprise
- */
 async function updateAndroidEnterprisePolicy(policyName, config, displayName) {
   try {
     const auth = getGoogleAuthClient();
@@ -387,7 +396,6 @@ async function updateAndroidEnterprisePolicy(policyName, config, displayName) {
       keyguardDisabled: config.keyguardDisabled || false
     };
 
-    // Kiosk mode
     if (config.kioskMode && config.kioskApps && config.kioskApps.length > 0) {
       policy.kioskCustomization = {
         deviceSettings: 'SETTINGS_ACCESS_ALLOWED',
@@ -418,9 +426,6 @@ async function updateAndroidEnterprisePolicy(policyName, config, displayName) {
   }
 }
 
-/**
- * Eliminar política de Android Enterprise
- */
 async function deleteAndroidEnterprisePolicy(policyName) {
   try {
     const auth = getGoogleAuthClient();
@@ -438,24 +443,18 @@ async function deleteAndroidEnterprisePolicy(policyName) {
 
   } catch (error) {
     console.error('❌ Error eliminando política:', error.message);
-    // No fallar si la política ya no existe en Google
   }
 }
 
-/**
- * Construir política de aplicaciones
- */
 function buildApplicationsPolicy(config) {
   const applications = [];
 
-  // Android Device Policy (obligatoria)
   applications.push({
     packageName: 'com.google.android.apps.work.clouddpc',
     installType: 'FORCE_INSTALLED',
     defaultPermissionPolicy: 'GRANT'
   });
 
-  // Apps permitidas (whitelist)
   if (config.allowedApps && config.allowedApps.length > 0) {
     config.allowedApps.forEach(packageName => {
       applications.push({
@@ -466,7 +465,6 @@ function buildApplicationsPolicy(config) {
     });
   }
 
-  // Apps bloqueadas (blacklist)
   if (config.blockedApps && config.blockedApps.length > 0) {
     config.blockedApps.forEach(packageName => {
       applications.push({
@@ -476,7 +474,6 @@ function buildApplicationsPolicy(config) {
     });
   }
 
-  // Apps de Kiosk
   if (config.kioskMode && config.kioskApps && config.kioskApps.length > 0) {
     config.kioskApps.forEach(packageName => {
       if (!applications.find(app => app.packageName === packageName)) {
@@ -493,9 +490,6 @@ function buildApplicationsPolicy(config) {
   return applications;
 }
 
-/**
- * Construir política de contraseñas
- */
 function buildPasswordPolicy(config) {
   if (!config.passwordRequired) {
     return null;
@@ -510,13 +504,9 @@ function buildPasswordPolicy(config) {
   };
 }
 
-/**
- * Aplicar política a todos los dispositivos que la usan
- */
 async function applyPolicyToDevices(policyId) {
   try {
-    // Obtener todos los dispositivos que usan esta política
-    const devices = await db.query(
+    const [devices] = await db.query(
       'SELECT google_device_name FROM devices WHERE policy_id = ? AND google_device_name IS NOT NULL',
       [policyId]
     );
@@ -533,8 +523,7 @@ async function applyPolicyToDevices(policyId) {
       auth: auth
     });
 
-    // Obtener la política actualizada
-    const policy = await db.query(
+    const [policy] = await db.query(
       'SELECT android_policy_name FROM policies WHERE id = ?',
       [policyId]
     );
@@ -545,7 +534,6 @@ async function applyPolicyToDevices(policyId) {
 
     const policyName = policy[0].android_policy_name;
 
-    // Aplicar a cada dispositivo
     for (const device of devices) {
       try {
         await androidmanagement.enterprises.devices.patch({
@@ -568,4 +556,3 @@ async function applyPolicyToDevices(policyId) {
 }
 
 module.exports = router;
-

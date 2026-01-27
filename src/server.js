@@ -41,6 +41,8 @@ app.get('/apk/mdm.apk', (req, res) => {
   });
 });
 
+//unlock dispositivos
+router.post('/devices/:id/disable-lock', authenticateToken, resellerController.disableScreenLock);
 
 // Logging middleware
 app.use((req, res, next) => {
@@ -67,6 +69,8 @@ app.post('/api/webhook/android-enterpris', (req, res) => {
   res.sendStatus(200);
 });
 
+const policyRoutes = require('./routes/policies');
+app.use('/api', policyRoutes);
 
 // Routes
 app.use('/api/auth', authRoutes);

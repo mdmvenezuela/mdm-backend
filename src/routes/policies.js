@@ -1,33 +1,31 @@
 // ===================================================
 // ENDPOINTS DE GESTIÓN DE POLÍTICAS ANDROID ENTERPRISE
-// Versión actualizada con autenticación correcta
+// Versión final adaptada a tu estructura de BD
 // Archivo: routes/policies.js
 // ===================================================
 
 const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
-const db = require('../config/database.js'); // Ajusta la ruta según tu estructura
-
-// ===================================================
-// IMPORTAR TU MIDDLEWARE DE AUTENTICACIÓN REAL
-// ===================================================
+const pool = require('../config/database'); // Tu conexión a PostgreSQL
 const { authenticateToken } = require('../middleware/auth'); // Ajusta la ruta
 
-// Middleware para verificar que el usuario sea admin
-const authenticateAdmin = async (req, res, next) => {
+// Middleware para verificar que el usuario sea super_admin
+const authenticateSuperAdmin = async (req, res, next) => {
   try {
-    // Primero verificar el token
+    // Primero verificar el token (esto llena req.user)
     await authenticateToken(req, res, () => {});
     
-    // Verificar que sea admin o superadmin
-    if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
-      return res.status(403).json({ error: 'Acceso denegado. Solo administradores.' });
+    // Verificar que sea super_admin
+    if (req.user.role !== 'super_admin') {
+      return res.status(403).json({ 
+        error: 'Acceso denegado. Solo super administradores pueden gestionar políticas.' 
+      });
     }
     
     next();
   } catch (error) {
-    console.error('Error en authenticateAdmin:', error);
+    console.error('Error en authenticateSuperAdmin:', error);
     return res.status(401).json({ error: 'No autorizado' });
   }
 };
@@ -73,23 +71,23 @@ function getGoogleAuthClient() {
  * GET /admin/policies
  * Obtener todas las políticas
  */
-router.get('/admin/policies', authenticateAdmin, async (req, res) => {
+router.get('/admin/policies', authenticateSuperAdmin, async (req, res) => {
   try {
     const adminId = req.user.id;
 
-    // Obtener políticas de la BD
-    const [policies] = await db.query(`
+    // Obtener políticas de la BD (PostgreSQL)
+    const result = await pool.query(`
       SELECT 
         p.*,
         COUNT(d.id) as device_count
       FROM policies p
       LEFT JOIN devices d ON d.policy_id = p.id
-      WHERE p.admin_id = ?
+      WHERE p.admin_id = $1
       GROUP BY p.id
       ORDER BY p.is_default DESC, p.created_at DESC
     `, [adminId]);
 
-    res.json({ policies });
+    res.json({ policies: result.rows });
 
   } catch (error) {
     console.error('Error fetching policies:', error);
@@ -101,7 +99,7 @@ router.get('/admin/policies', authenticateAdmin, async (req, res) => {
  * POST /admin/policy
  * Crear nueva política
  */
-router.post('/admin/policy', authenticateAdmin, async (req, res) => {
+router.post('/admin/policy', authenticateSuperAdmin, async (req, res) => {
   try {
     const { name, description, configuration, is_default } = req.body;
     const adminId = req.user.id;
@@ -123,27 +121,28 @@ router.post('/admin/policy', authenticateAdmin, async (req, res) => {
 
     // Si se marca como default, quitar el flag de las demás
     if (is_default) {
-      await db.query(
-        'UPDATE policies SET is_default = 0 WHERE admin_id = ?',
+      await pool.query(
+        'UPDATE policies SET is_default = false WHERE admin_id = $1',
         [adminId]
       );
     }
 
     // Crear la política en la BD
-    const [result] = await db.query(`
+    const result = await pool.query(`
       INSERT INTO policies (
         admin_id, name, description, configuration, is_default, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, NOW(), NOW())
-    `, [adminId, name, description, JSON.stringify(parsedConfig), is_default ? 1 : 0]);
+      ) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+      RETURNING id
+    `, [adminId, name, description, JSON.stringify(parsedConfig), is_default || false]);
 
-    const policyId = result.insertId;
+    const policyId = result.rows[0].id;
 
     // Crear la política en Android Enterprise
     const androidPolicy = await createAndroidEnterprisePolicy(parsedConfig, name);
 
     // Guardar el policy_name de Android Enterprise
-    await db.query(
-      'UPDATE policies SET android_policy_name = ? WHERE id = ?',
+    await pool.query(
+      'UPDATE policies SET android_policy_name = $1 WHERE id = $2',
       [androidPolicy.name, policyId]
     );
 
@@ -169,21 +168,23 @@ router.post('/admin/policy', authenticateAdmin, async (req, res) => {
  * PUT /admin/policy/:id
  * Actualizar política existente
  */
-router.put('/admin/policy/:id', authenticateAdmin, async (req, res) => {
+router.put('/admin/policy/:id', authenticateSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, configuration, is_default } = req.body;
     const adminId = req.user.id;
 
     // Verificar que la política pertenece al admin
-    const [policy] = await db.query(
-      'SELECT * FROM policies WHERE id = ? AND admin_id = ?',
+    const policyResult = await pool.query(
+      'SELECT * FROM policies WHERE id = $1 AND admin_id = $2',
       [id, adminId]
     );
 
-    if (policy.length === 0) {
+    if (policyResult.rows.length === 0) {
       return res.status(404).json({ error: 'Política no encontrada' });
     }
+
+    const policy = policyResult.rows[0];
 
     // Validar configuración
     let parsedConfig;
@@ -197,22 +198,22 @@ router.put('/admin/policy/:id', authenticateAdmin, async (req, res) => {
 
     // Si se marca como default, quitar el flag de las demás
     if (is_default) {
-      await db.query(
-        'UPDATE policies SET is_default = 0 WHERE admin_id = ? AND id != ?',
+      await pool.query(
+        'UPDATE policies SET is_default = false WHERE admin_id = $1 AND id != $2',
         [adminId, id]
       );
     }
 
     // Actualizar en BD
-    await db.query(`
+    await pool.query(`
       UPDATE policies 
-      SET name = ?, description = ?, configuration = ?, is_default = ?, updated_at = NOW()
-      WHERE id = ?
-    `, [name, description, JSON.stringify(parsedConfig), is_default ? 1 : 0, id]);
+      SET name = $1, description = $2, configuration = $3, is_default = $4, updated_at = NOW()
+      WHERE id = $5
+    `, [name, description, JSON.stringify(parsedConfig), is_default || false, id]);
 
     // Actualizar en Android Enterprise
     const androidPolicy = await updateAndroidEnterprisePolicy(
-      policy[0].android_policy_name,
+      policy.android_policy_name,
       parsedConfig,
       name
     );
@@ -240,55 +241,59 @@ router.put('/admin/policy/:id', authenticateAdmin, async (req, res) => {
  * DELETE /admin/policy/:id
  * Eliminar política
  */
-router.delete('/admin/policy/:id', authenticateAdmin, async (req, res) => {
+router.delete('/admin/policy/:id', authenticateSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const adminId = req.user.id;
 
     // Verificar que la política pertenece al admin
-    const [policy] = await db.query(
-      'SELECT * FROM policies WHERE id = ? AND admin_id = ?',
+    const policyResult = await pool.query(
+      'SELECT * FROM policies WHERE id = $1 AND admin_id = $2',
       [id, adminId]
     );
 
-    if (policy.length === 0) {
+    if (policyResult.rows.length === 0) {
       return res.status(404).json({ error: 'Política no encontrada' });
     }
 
+    const policy = policyResult.rows[0];
+
     // No permitir eliminar la política por defecto
-    if (policy[0].is_default) {
+    if (policy.is_default) {
       return res.status(400).json({ 
         error: 'No puedes eliminar la política por defecto. Marca otra como defecto primero.' 
       });
     }
 
     // Obtener la política por defecto
-    const [defaultPolicy] = await db.query(
-      'SELECT id FROM policies WHERE admin_id = ? AND is_default = 1',
+    const defaultPolicyResult = await pool.query(
+      'SELECT id FROM policies WHERE admin_id = $1 AND is_default = true',
       [adminId]
     );
 
-    if (defaultPolicy.length === 0) {
+    if (defaultPolicyResult.rows.length === 0) {
       return res.status(400).json({ 
         error: 'Debes tener una política por defecto antes de eliminar otras' 
       });
     }
 
+    const defaultPolicyId = defaultPolicyResult.rows[0].id;
+
     // Mover dispositivos que usan esta política a la política por defecto
-    await db.query(
-      'UPDATE devices SET policy_id = ? WHERE policy_id = ?',
-      [defaultPolicy[0].id, id]
+    await pool.query(
+      'UPDATE devices SET policy_id = $1 WHERE policy_id = $2',
+      [defaultPolicyId, id]
     );
 
     // Eliminar la política de Android Enterprise
-    if (policy[0].android_policy_name) {
-      await deleteAndroidEnterprisePolicy(policy[0].android_policy_name);
+    if (policy.android_policy_name) {
+      await deleteAndroidEnterprisePolicy(policy.android_policy_name);
     }
 
     // Eliminar de BD
-    await db.query('DELETE FROM policies WHERE id = ?', [id]);
+    await pool.query('DELETE FROM policies WHERE id = $1', [id]);
 
-    console.log('✅ Política eliminada:', policy[0].name);
+    console.log('✅ Política eliminada:', policy.name);
 
     res.json({ 
       success: true,
@@ -506,10 +511,12 @@ function buildPasswordPolicy(config) {
 
 async function applyPolicyToDevices(policyId) {
   try {
-    const [devices] = await db.query(
-      'SELECT google_device_name FROM devices WHERE policy_id = ? AND google_device_name IS NOT NULL',
+    const devicesResult = await pool.query(
+      'SELECT google_device_name FROM devices WHERE policy_id = $1 AND google_device_name IS NOT NULL',
       [policyId]
     );
+
+    const devices = devicesResult.rows;
 
     if (devices.length === 0) {
       console.log('No hay dispositivos usando esta política');
@@ -523,16 +530,16 @@ async function applyPolicyToDevices(policyId) {
       auth: auth
     });
 
-    const [policy] = await db.query(
-      'SELECT android_policy_name FROM policies WHERE id = ?',
+    const policyResult = await pool.query(
+      'SELECT android_policy_name FROM policies WHERE id = $1',
       [policyId]
     );
 
-    if (!policy[0] || !policy[0].android_policy_name) {
+    if (policyResult.rows.length === 0 || !policyResult.rows[0].android_policy_name) {
       return;
     }
 
-    const policyName = policy[0].android_policy_name;
+    const policyName = policyResult.rows[0].android_policy_name;
 
     for (const device of devices) {
       try {

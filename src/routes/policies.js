@@ -82,7 +82,7 @@ router.get('/admin/policies', authenticateSuperAdmin, async (req, res) => {
         COUNT(d.id) as device_count
       FROM policies p
       LEFT JOIN devices d ON d.policy_id = p.id
-      WHERE p.admin_id = $1
+      WHERE p.super_admin_id = $1
       GROUP BY p.id
       ORDER BY p.is_default DESC, p.created_at DESC
     `, [adminId]);

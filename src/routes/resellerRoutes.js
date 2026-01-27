@@ -15,5 +15,16 @@ router.post('/device/:id/lock', resellerController.lockDevice);
 router.post('/device/:id/unlock', resellerController.unlockDevice);
 router.delete('/device/:id/release', resellerController.releaseDevice);
 router.get('/device/:id/location/history', resellerController.getDeviceLocationHistory);
+// Obtener políticas disponibles
+router.get('/policies/available', authenticateToken, resellerController.getAvailablePolicies);
+
+// Cambiar política de un dispositivo
+router.post('/device/:id/change-policy', authenticateToken, resellerController.changeDevicePolicy);
+
+// Reiniciar dispositivo
+router.post('/device/:id/reboot', authenticateToken, resellerController.rebootDevice);
+
+// Obtener detalle completo del dispositivo
+router.get('/device/:id/detail', authenticateToken, resellerController.getDeviceDetail);
 
 module.exports = router;

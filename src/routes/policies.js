@@ -7,7 +7,7 @@
 const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
-const db = require('../database/db'); // Ajusta la ruta según tu estructura
+const db = require('../config/database.js'); // Ajusta la ruta según tu estructura
 
 // ===================================================
 // IMPORTAR TU MIDDLEWARE DE AUTENTICACIÓN REAL

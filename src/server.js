@@ -42,7 +42,7 @@ app.get('/apk/mdm.apk', (req, res) => {
 });
 
 //unlock dispositivos
-router.post('/devices/:id/disable-lock', authenticateToken, resellerController.disableScreenLock);
+app.post('/devices/:id/disable-lock', authenticateToken, resellerController.disableScreenLock);
 
 // Logging middleware
 app.use((req, res, next) => {

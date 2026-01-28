@@ -525,7 +525,7 @@ exports.unlockDevice = async (req, res) => {
 
     await client.query(
       'UPDATE devices SET status = $1, unlock_code = $2, lock_message = NULL WHERE id = $3',
-      ['ACTIVO', unlockPassword, id]
+      ['A', unlockPassword, id]
     );
 
     await client.query('COMMIT');

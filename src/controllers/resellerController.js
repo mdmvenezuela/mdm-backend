@@ -450,8 +450,7 @@ Para desbloquear tu dispositivo de inmediato
     await androidManagement.enterprises.devices.issueCommand({
       name: device.google_device_name,  // ✅ NO el ID de BD
       requestBody: {
-        type: 'LOCK',
-        lockReason: lockMessage
+        type: 'LOCK'
       }
     });
 

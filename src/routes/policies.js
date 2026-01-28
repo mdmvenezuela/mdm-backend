@@ -316,6 +316,17 @@ async function createAndroidEnterprisePolicy(config, name) {
       }));
     }
 
+    if (config.locationTrackingEnabled) {
+  policy.locationMode = config.locationMode || 'LOCATION_ENFORCED';
+
+  policy.statusReportingSettings = {
+    deviceSettingsEnabled: true,
+    locationReportingEnabled: true,
+    networkInfoEnabled: true,
+    powerManagementEventsEnabled: true
+  };
+}
+
     const response = await androidmanagement.enterprises.policies.patch({
       name: policyName,
       updateMask: Object.keys(policy).filter(k => policy[k] !== null && policy[k] !== undefined).join(','),

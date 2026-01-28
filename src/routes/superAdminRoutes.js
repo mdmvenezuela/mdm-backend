@@ -13,6 +13,6 @@ router.get('/resellers', superAdminController.getResellers);
 router.post('/reseller/:id/licenses', superAdminController.addLicenses);
 router.put('/reseller/:id/toggle', superAdminController.toggleResellerStatus);
 router.get('/devices', superAdminController.getAllDevices);
-router.get('/managed-google-play', authenticateSuperAdmin, controller);
+router.get('/managed-google-play', authenticateToken, isSuperAdmin, getManagedPlayIframe);
 
 module.exports = router;

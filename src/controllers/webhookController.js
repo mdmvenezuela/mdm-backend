@@ -1,6 +1,6 @@
 // ===================================================
-// WEBHOOK CONTROLLER - VERSIÓN CON PROCESAMIENTO DE UBICACIÓN
-// Reemplazar: controllers/webhookController.js
+// WEBHOOK CONTROLLER CORREGIDO - SIN ERRORES DE EXPORT
+// Archivo: controllers/webhookController.js
 // ===================================================
 
 const pool = require('../config/database');
@@ -26,8 +26,10 @@ async function getAndroidManagementClient() {
   });
 }
 
-// Handler principal
-exports.handlePubSubNotification = async (req, res) => {
+// ===================================================
+// HANDLER PRINCIPAL DE PUB/SUB
+// ===================================================
+async function handlePubSubNotification(req, res) {
   console.log('\n' + '═'.repeat(80));
   console.log('📨 Webhook recibido de Android Enterprise');
   console.log('═'.repeat(80));
@@ -53,7 +55,6 @@ exports.handlePubSubNotification = async (req, res) => {
     console.log('📱 Device:', deviceName);
     console.log('📋 Events:', events.length);
 
-    // Procesar eventos
     for (const event of events) {
       console.log(`\n🔔 Evento: ${event.eventType}`);
       
@@ -76,9 +77,11 @@ exports.handlePubSubNotification = async (req, res) => {
     console.error('Stack:', error.stack);
     res.status(200).send('OK');
   }
-};
+}
 
-// Handler de enrollment
+// ===================================================
+// HANDLER DE ENROLLMENT
+// ===================================================
 async function handleEnrollmentComplete(deviceName, userName, event) {
   const client = await pool.connect();
   
@@ -151,39 +154,37 @@ async function handleEnrollmentComplete(deviceName, userName, event) {
       return;
     }
 
-    // Insertar nuevo dispositivo
     const insertResult = await client.query(`
-    INSERT INTO devices (
+      INSERT INTO devices (
+        google_device_name,
+        imei,
+        serial_number,
+        manufacturer,
+        model,
+        android_version,
+        reseller_id,
+        license_id,
+        status,
+        enrolled_at,
+        last_connection,
+        is_online
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), true)
+      RETURNING id
+    `, [
+      deviceName,
       imei,
+      serialNumber,
       manufacturer,
       model,
-      android_version,
-      reseller_id,
-      license_id,
-      status,
-      enrolled_at,
-      last_connection,
-      is_online,
-      google_device_name,
-      serial_number
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), true, $8, $9)
-    RETURNING id
-  `, [
-    imei,
-    manufacturer,
-    model,
-    androidVersion,
-    resellerId,
-    licenseId,
-    'ACTIVO',
-    deviceName,
-    serialNumber
-  ]);
+      androidVersion,
+      resellerId,
+      licenseId,
+      'ACTIVO'
+    ]);
 
     const deviceId = insertResult.rows[0].id;
     console.log('✅ Dispositivo insertado con ID:', deviceId);
 
-    // Actualizar licencia
     await client.query(`
       UPDATE licenses 
       SET status = $1, device_imei = $2, activated_at = NOW()
@@ -192,7 +193,6 @@ async function handleEnrollmentComplete(deviceName, userName, event) {
     
     console.log('✅ Licencia actualizada');
 
-    // Marcar token como usado
     await client.query(
       'UPDATE enrollment_tokens SET is_used = true WHERE id = $1',
       [token.id]
@@ -210,13 +210,12 @@ async function handleEnrollmentComplete(deviceName, userName, event) {
 }
 
 // ===================================================
-// NUEVO: Handler de actualización de estado (con ubicación)
+// HANDLER DE STATUS REPORT (CON UBICACIÓN)
 // ===================================================
 async function handleStatusReport(deviceName, event) {
   try {
     console.log('\n📈 === PROCESANDO STATUS_REPORT ===');
     
-    // Obtener información actualizada del dispositivo
     const androidManagement = await getAndroidManagementClient();
     const deviceInfo = await androidManagement.enterprises.devices.get({
       name: deviceName
@@ -224,7 +223,6 @@ async function handleStatusReport(deviceName, event) {
 
     const device = deviceInfo.data;
 
-    // Buscar dispositivo en BD
     const deviceResult = await pool.query(
       'SELECT id FROM devices WHERE google_device_name = $1',
       [deviceName]
@@ -237,14 +235,12 @@ async function handleStatusReport(deviceName, event) {
 
     const deviceId = deviceResult.rows[0].id;
 
-    // Extraer datos de ubicación y batería
     let batteryLevel = null;
     if (device.powerManagementEvents && device.powerManagementEvents.length > 0) {
       const lastEvent = device.powerManagementEvents[0];
       batteryLevel = lastEvent.batteryLevel;
     }
 
-    // Intentar obtener ubicación
     let latitude = null;
     let longitude = null;
     let accuracy = null;
@@ -258,12 +254,10 @@ async function handleStatusReport(deviceName, event) {
       }
     }
 
-    // Actualizar en BD
     if (latitude && longitude) {
       console.log('📍 Ubicación encontrada:', latitude, longitude);
       await updateDeviceLocation(deviceId, latitude, longitude, accuracy, batteryLevel);
     } else {
-      // Solo actualizar última conexión y batería
       await pool.query(`
         UPDATE devices 
         SET last_connection = NOW(), 
@@ -280,13 +274,12 @@ async function handleStatusReport(deviceName, event) {
 }
 
 // ===================================================
-// NUEVO: Handler específico de actualización de ubicación
+// HANDLER DE LOCATION UPDATE
 // ===================================================
 async function handleLocationUpdate(deviceName, event) {
   try {
     console.log('\n📍 === PROCESANDO LOCATION_UPDATE ===');
     
-    // Buscar dispositivo en BD
     const deviceResult = await pool.query(
       'SELECT id FROM devices WHERE google_device_name = $1',
       [deviceName]
@@ -299,7 +292,6 @@ async function handleLocationUpdate(deviceName, event) {
 
     const deviceId = deviceResult.rows[0].id;
 
-    // Obtener ubicación del evento
     if (event.location) {
       const latitude = event.location.latitude;
       const longitude = event.location.longitude;
@@ -317,7 +309,7 @@ async function handleLocationUpdate(deviceName, event) {
 }
 
 // ===================================================
-// Helper para actualizar ubicación
+// HELPER: ACTUALIZAR UBICACIÓN
 // ===================================================
 async function updateDeviceLocation(deviceId, latitude, longitude, accuracy = null, batteryLevel = null) {
   const client = await pool.connect();
@@ -325,7 +317,6 @@ async function updateDeviceLocation(deviceId, latitude, longitude, accuracy = nu
   try {
     await client.query('BEGIN');
 
-    // Actualizar ubicación actual
     await client.query(`
       UPDATE devices 
       SET last_location_lat = $1, 
@@ -337,14 +328,12 @@ async function updateDeviceLocation(deviceId, latitude, longitude, accuracy = nu
       WHERE id = $5
     `, [latitude, longitude, accuracy, batteryLevel, deviceId]);
 
-    // Guardar en historial
     await client.query(`
       INSERT INTO device_locations 
       (device_id, latitude, longitude, accuracy, battery_level, recorded_at)
       VALUES ($1, $2, $3, $4, $5, NOW())
     `, [deviceId, latitude, longitude, accuracy, batteryLevel]);
 
-    // Detectar lugares frecuentes
     await detectFrequentPlace(client, deviceId, latitude, longitude);
 
     await client.query('COMMIT');
@@ -357,73 +346,84 @@ async function updateDeviceLocation(deviceId, latitude, longitude, accuracy = nu
   }
 }
 
-// Detectar lugares frecuentes
+// ===================================================
+// HELPER: DETECTAR LUGARES FRECUENTES
+// ===================================================
 async function detectFrequentPlace(client, deviceId, latitude, longitude) {
-  const RADIUS_THRESHOLD = 100; // metros
+  const RADIUS_THRESHOLD = 100;
 
-  // Buscar si hay un lugar frecuente cercano
-  const nearbyPlaces = await client.query(`
-    SELECT *, 
-      (6371000 * acos(
-        cos(radians($2)) * cos(radians(latitude)) * 
-        cos(radians(longitude) - radians($3)) + 
-        sin(radians($2)) * sin(radians(latitude))
-      )) AS distance
-    FROM device_frequent_places
-    WHERE device_id = $1
-    HAVING distance < $4
-    ORDER BY distance
-    LIMIT 1
-  `, [deviceId, latitude, longitude, RADIUS_THRESHOLD]);
+  try {
+    const nearbyPlaces = await client.query(`
+      SELECT *, 
+        (6371000 * acos(
+          cos(radians($2)) * cos(radians(latitude)) * 
+          cos(radians(longitude) - radians($3)) + 
+          sin(radians($2)) * sin(radians(latitude))
+        )) AS distance
+      FROM device_frequent_places
+      WHERE device_id = $1
+      HAVING distance < $4
+      ORDER BY distance
+      LIMIT 1
+    `, [deviceId, latitude, longitude, RADIUS_THRESHOLD]);
 
-  if (nearbyPlaces.rows.length > 0) {
-    // Lugar existente
-    const place = nearbyPlaces.rows[0];
-    await client.query(`
-      UPDATE device_frequent_places
-      SET visit_count = visit_count + 1,
-          last_seen = NOW(),
-          updated_at = NOW()
-      WHERE id = $1
-    `, [place.id]);
-  } else {
-    // Nuevo lugar
-    await client.query(`
-      INSERT INTO device_frequent_places
-      (device_id, latitude, longitude, visit_count, first_seen, last_seen, place_type)
-      VALUES ($1, $2, $3, 1, NOW(), NOW(), 'frequent')
-    `, [deviceId, latitude, longitude]);
+    if (nearbyPlaces.rows.length > 0) {
+      const place = nearbyPlaces.rows[0];
+      await client.query(`
+        UPDATE device_frequent_places
+        SET visit_count = visit_count + 1,
+            last_seen = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+      `, [place.id]);
+    } else {
+      await client.query(`
+        INSERT INTO device_frequent_places
+        (device_id, latitude, longitude, visit_count, first_seen, last_seen, place_type)
+        VALUES ($1, $2, $3, 1, NOW(), NOW(), 'frequent')
+      `, [deviceId, latitude, longitude]);
+    }
+
+    await calculatePlaceTypes(client, deviceId);
+  } catch (error) {
+    console.error('Error detectando lugar frecuente:', error);
   }
-
-  // Recalcular tipos
-  await calculatePlaceTypes(client, deviceId);
 }
 
-// Calcular tipos de lugares
+// ===================================================
+// HELPER: CALCULAR TIPOS DE LUGARES
+// ===================================================
 async function calculatePlaceTypes(client, deviceId) {
-  const places = await client.query(`
-    SELECT * FROM device_frequent_places
-    WHERE device_id = $1
-    ORDER BY visit_count DESC
-  `, [deviceId]);
+  try {
+    const places = await client.query(`
+      SELECT * FROM device_frequent_places
+      WHERE device_id = $1
+      ORDER BY visit_count DESC
+    `, [deviceId]);
 
-  if (places.rows.length > 0) {
-    await client.query(`
-      UPDATE device_frequent_places
-      SET place_type = 'home', confidence_score = 90
-      WHERE id = $1
-    `, [places.rows[0].id]);
-  }
+    if (places.rows.length > 0) {
+      await client.query(`
+        UPDATE device_frequent_places
+        SET place_type = 'home', confidence_score = 90
+        WHERE id = $1
+      `, [places.rows[0].id]);
+    }
 
-  if (places.rows.length > 1) {
-    await client.query(`
-      UPDATE device_frequent_places
-      SET place_type = 'work', confidence_score = 70
-      WHERE id = $1
-    `, [places.rows[1].id]);
+    if (places.rows.length > 1) {
+      await client.query(`
+        UPDATE device_frequent_places
+        SET place_type = 'work', confidence_score = 70
+        WHERE id = $1
+      `, [places.rows[1].id]);
+    }
+  } catch (error) {
+    console.error('Error calculando tipos de lugares:', error);
   }
 }
 
+// ===================================================
+// EXPORTS - IMPORTANTE
+// ===================================================
 module.exports = {
   handlePubSubNotification
 };

@@ -47,5 +47,6 @@ async function createEnrollmentToken(policyName = null) {
 }
 
 module.exports = {
+  initAndroidManagement,
   createEnrollmentToken,
 };

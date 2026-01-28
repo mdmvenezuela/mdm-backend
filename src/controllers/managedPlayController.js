@@ -1,37 +1,39 @@
-const { getAndroidManagementClient } = require('../services/androidManagement');
+const { initAndroidManagement } = require('../utils/androidManagement');
 
 exports.getManagedPlayIframe = async (req, res) => {
   try {
-    // 🔐 Seguridad: solo super_admin
+    // Seguridad extra (aunque ya pasa por middleware)
     if (req.user.role !== 'super_admin') {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const androidManagement = await getAndroidManagementClient();
+    const androidManagement = await initAndroidManagement();
 
-    // ⚠️ USÁ tu enterpriseName REAL guardado en DB o env
     const enterpriseName = process.env.ANDROID_ENTERPRISE_NAME;
-    // ejemplo: enterprises/LC02abcxyz
+    const callbackUrl = 'https://solvenca.lat/admin/apps'; 
+    // podés cambiar luego
 
-    const response = await androidManagement.enterprises.webTokens.create({
+    const response = await androidManagement.enterprises.webApps.generateManagedPlayStoreUrl({
       parent: enterpriseName,
       requestBody: {
-        parentFrameUrl: 'https://solvenca.lat',
-        enabledFeatures: [
-          'MANAGED_GOOGLE_PLAY'
-        ]
-      }
+        enabled: true,
+        storeBuilderEnabled: true,
+        iframe: {
+          parentOrigin: 'https://solvenca.lat',
+        },
+        callbackUrl,
+      },
     });
 
     res.json({
-      iframeUrl: response.data.value
+      iframeUrl: response.data.url,
     });
 
   } catch (error) {
-    console.error('Error creando Managed Play iframe:', error);
+    console.error('❌ Error generando iframe Managed Play:', error);
     res.status(500).json({
-      error: 'Error creando iframe de Managed Google Play',
-      details: error.message
+      error: 'Error generando iframe de Managed Google Play',
+      details: error.message,
     });
   }
 };

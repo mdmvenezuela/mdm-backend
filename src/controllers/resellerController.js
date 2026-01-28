@@ -455,7 +455,7 @@ Para desbloquear tu dispositivo de inmediato
     });
 
     await client.query(
-      'UPDATE devices SET status = $1, lock_message = $2 WHERE id = $3',
+      'UPDATE devices SET status = $1, lock_message = $2, unlock_code = NULL WHERE id = $3',
       ['BLOQUEADO', lockMessage, id]
     );
 
@@ -518,8 +518,11 @@ exports.unlockDevice = async (req, res) => {
       name: device.google_device_name,  // ✅ NO el ID de BD
       requestBody: {
         type: 'RESET_PASSWORD',
-        resetPasswordFlags: ['REQUIRE_ENTRY'],
-        newPassword: unlockPassword
+        newPassword: unlockPassword,
+        resetPasswordFlags: [
+      'REQUIRE_ENTRY',
+      'DISALLOW_REUSE'
+    ]
       }
     });
 

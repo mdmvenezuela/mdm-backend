@@ -1,6 +1,6 @@
 // ===================================================
-// RESELLER CONTROLLER - VERSIÓN MEJORADA
-// Con gestión de políticas y controles avanzados
+// RESELLER CONTROLLER - VERSIÓN CON UBICACIÓN Y EDICIÓN
+// Incluye: tracking de ubicación, lugares frecuentes, edición de cliente
 // Archivo: controllers/resellerController.js
 // ===================================================
 
@@ -9,7 +9,7 @@ const { createEnrollmentToken } = require('../utils/androidManagement');
 const QRCode = require('qrcode');
 const { google } = require('googleapis');
 
-// Función helper para Android Management
+// Helper para Android Management
 async function getAndroidManagementClient() {
   const credentialsJson = Buffer.from(
     process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64, 
@@ -68,7 +68,7 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// Generar QR de enrollment con Android Enterprise
+// Generar QR de enrollment
 exports.generateEnrollmentQR = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -152,7 +152,7 @@ exports.getDevices = async (req, res) => {
 };
 
 // ===================================================
-// NUEVO: Obtener detalle completo de dispositivo
+// NUEVO: Obtener detalle completo de dispositivo CON ubicación actualizada
 // ===================================================
 exports.getDeviceDetail = async (req, res) => {
   try {
@@ -175,7 +175,7 @@ exports.getDeviceDetail = async (req, res) => {
 
     const device = result.rows[0];
 
-    // Obtener información en tiempo real de Android Enterprise
+    // Obtener información actualizada de Android Enterprise
     if (device.google_device_name) {
       try {
         const androidManagement = await getAndroidManagementClient();
@@ -190,27 +190,41 @@ exports.getDeviceDetail = async (req, res) => {
           lastPolicySyncTime: deviceInfo.data.lastPolicySyncTime,
           policyName: deviceInfo.data.policyName,
           enrollmentTime: deviceInfo.data.enrollmentTime,
-          
-          // Hardware
           hardwareInfo: deviceInfo.data.hardwareInfo,
-          
-          // Software y Apps
           softwareInfo: deviceInfo.data.softwareInfo,
           applicationReports: deviceInfo.data.applicationReports,
-          
-          // Estado del dispositivo
           memoryInfo: deviceInfo.data.memoryInfo,
           networkInfo: deviceInfo.data.networkInfo,
           powerManagementEvents: deviceInfo.data.powerManagementEvents,
-          
-          // Información de usuario
           user: deviceInfo.data.user,
           userName: deviceInfo.data.userName,
         };
+
+        // Actualizar ubicación si está disponible en los eventos
+        const displays = deviceInfo.data.displays;
+        if (displays && displays.length > 0 && displays[0].location) {
+          const location = displays[0].location;
+          await updateDeviceLocation(device.id, location.latitude, location.longitude);
+          device.last_location_lat = location.latitude;
+          device.last_location_lon = location.longitude;
+        }
+
       } catch (error) {
         console.error('Error obteniendo info de Google:', error);
         device.google_info = { error: error.message };
       }
+    }
+
+    // Obtener lugar frecuente más probable (casa)
+    const frequentPlace = await pool.query(`
+      SELECT * FROM device_frequent_places
+      WHERE device_id = $1
+      ORDER BY confidence_score DESC, visit_count DESC
+      LIMIT 1
+    `, [device.id]);
+
+    if (frequentPlace.rows.length > 0) {
+      device.probable_location = frequentPlace.rows[0];
     }
 
     res.json({ device });
@@ -221,56 +235,51 @@ exports.getDeviceDetail = async (req, res) => {
 };
 
 // ===================================================
-// NUEVO: Listar políticas disponibles
+// NUEVO: Actualizar información del cliente
 // ===================================================
-exports.getAvailablePolicies = async (req, res) => {
+exports.updateClientInfo = async (req, res) => {
   try {
-    const androidManagement = await getAndroidManagementClient();
-    const enterpriseName = process.env.ANDROID_ENTERPRISE_NAME;
+    const { id } = req.params;
+    const { client_name, client_phone } = req.body;
+    const resellerId = req.user.id;
 
-    const response = await androidManagement.enterprises.policies.list({
-      parent: enterpriseName
+    // Verificar que el dispositivo pertenece al reseller
+    const deviceCheck = await pool.query(
+      'SELECT id FROM devices WHERE id = $1 AND reseller_id = $2',
+      [id, resellerId]
+    );
+
+    if (deviceCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Dispositivo no encontrado' });
+    }
+
+    // Actualizar información
+    await pool.query(`
+      UPDATE devices 
+      SET client_name = $1, client_phone = $2
+      WHERE id = $3
+    `, [client_name, client_phone, id]);
+
+    res.json({
+      message: 'Información del cliente actualizada',
+      client_name,
+      client_phone
     });
 
-    const policies = response.data.policies || [];
-
-    // Formatear políticas para el frontend
-    const formattedPolicies = policies.map(policy => {
-      const policyNameParts = policy.name.split('/');
-      const policyId = policyNameParts[policyNameParts.length - 1];
-      
-      return {
-        id: policyId,
-        name: policyId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-        fullName: policy.name,
-        version: policy.version
-      };
-    });
-
-    res.json({ policies: formattedPolicies });
   } catch (error) {
-    console.error('Error listando políticas:', error);
-    res.status(500).json({ 
-      error: 'Error obteniendo políticas',
-      details: error.message 
-    });
+    console.error('Error actualizando cliente:', error);
+    res.status(500).json({ error: 'Error actualizando información del cliente' });
   }
 };
 
 // ===================================================
-// NUEVO: Cambiar política de un dispositivo
+// NUEVO: Solicitar ubicación actualizada del dispositivo
 // ===================================================
-exports.changeDevicePolicy = async (req, res) => {
+exports.requestDeviceLocation = async (req, res) => {
   try {
     const { id } = req.params;
-    const { policyName } = req.body;
     const resellerId = req.user.id;
 
-    if (!policyName) {
-      return res.status(400).json({ error: 'Policy name es requerido' });
-    }
-
-    // Verificar que el dispositivo pertenece al reseller
     const deviceResult = await pool.query(
       'SELECT * FROM devices WHERE id = $1 AND reseller_id = $2',
       [id, resellerId]
@@ -286,33 +295,161 @@ exports.changeDevicePolicy = async (req, res) => {
       return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
     }
 
-    // Cambiar política en Android Enterprise
+    // Solicitar reporte de estado a Android Enterprise
     const androidManagement = await getAndroidManagementClient();
     
-    await androidManagement.enterprises.devices.patch({
+    await androidManagement.enterprises.devices.issueCommand({
       name: device.google_device_name,
-      updateMask: 'policyName',
       requestBody: {
-        policyName: policyName
+        type: 'GET_DEVICE_STATE'
       }
     });
 
-    res.json({
-      message: 'Política cambiada exitosamente',
-      device_id: id,
-      new_policy: policyName,
-      note: 'Los cambios se aplicarán en el próximo sync del dispositivo (puede tomar unos minutos)'
+    // Obtener info actualizada
+    const deviceInfo = await androidManagement.enterprises.devices.get({
+      name: device.google_device_name
     });
+
+    let location = null;
+    
+    // Intentar obtener ubicación de displays
+    if (deviceInfo.data.displays && deviceInfo.data.displays.length > 0) {
+      const display = deviceInfo.data.displays[0];
+      if (display.location) {
+        location = {
+          latitude: display.location.latitude,
+          longitude: display.location.longitude
+        };
+        
+        // Guardar en BD
+        await updateDeviceLocation(device.id, location.latitude, location.longitude);
+      }
+    }
+
+    res.json({
+      message: 'Ubicación solicitada',
+      device_id: id,
+      location: location,
+      last_status_time: deviceInfo.data.lastStatusReportTime
+    });
+
   } catch (error) {
-    console.error('Error cambiando política:', error);
+    console.error('Error solicitando ubicación:', error);
     res.status(500).json({ 
-      error: 'Error cambiando política',
+      error: 'Error solicitando ubicación del dispositivo',
       details: error.message 
     });
   }
 };
 
-// Bloquear dispositivo con mensaje personalizado
+// Helper para actualizar ubicación del dispositivo
+async function updateDeviceLocation(deviceId, latitude, longitude, accuracy = null, batteryLevel = null) {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+
+    // Actualizar ubicación actual en devices
+    await client.query(`
+      UPDATE devices 
+      SET last_location_lat = $1, 
+          last_location_lon = $2, 
+          last_location_accuracy = $3,
+          last_location_time = NOW(),
+          battery_level = $4,
+          last_connection = NOW()
+      WHERE id = $5
+    `, [latitude, longitude, accuracy, batteryLevel, deviceId]);
+
+    // Guardar en historial
+    await client.query(`
+      INSERT INTO device_locations 
+      (device_id, latitude, longitude, accuracy, battery_level, recorded_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+    `, [deviceId, latitude, longitude, accuracy, batteryLevel]);
+
+    // Detectar y actualizar lugares frecuentes
+    await detectFrequentPlace(client, deviceId, latitude, longitude);
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error guardando ubicación:', error);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Detectar lugares frecuentes
+async function detectFrequentPlace(client, deviceId, latitude, longitude) {
+  const RADIUS_THRESHOLD = 100; // 100 metros
+
+  // Buscar lugares frecuentes cercanos
+  const nearbyPlaces = await client.query(`
+    SELECT *, 
+      calculate_distance(latitude, longitude, $2, $3) as distance
+    FROM device_frequent_places
+    WHERE device_id = $1
+    HAVING distance < $4
+    ORDER BY distance
+    LIMIT 1
+  `, [deviceId, latitude, longitude, RADIUS_THRESHOLD]);
+
+  if (nearbyPlaces.rows.length > 0) {
+    // Lugar existente - incrementar contador
+    const place = nearbyPlaces.rows[0];
+    await client.query(`
+      UPDATE device_frequent_places
+      SET visit_count = visit_count + 1,
+          last_seen = NOW(),
+          updated_at = NOW()
+      WHERE id = $1
+    `, [place.id]);
+  } else {
+    // Nuevo lugar frecuente
+    await client.query(`
+      INSERT INTO device_frequent_places
+      (device_id, latitude, longitude, visit_count, first_seen, last_seen, place_type)
+      VALUES ($1, $2, $3, 1, NOW(), NOW(), 'frequent')
+    `, [deviceId, latitude, longitude]);
+  }
+
+  // Recalcular confianza y tipo de lugares
+  await calculatePlaceTypes(client, deviceId);
+}
+
+// Calcular tipos de lugares (casa, trabajo)
+async function calculatePlaceTypes(client, deviceId) {
+  // Obtener todos los lugares ordenados por visitas
+  const places = await client.query(`
+    SELECT * FROM device_frequent_places
+    WHERE device_id = $1
+    ORDER BY visit_count DESC, total_time_minutes DESC
+  `, [deviceId]);
+
+  if (places.rows.length > 0) {
+    // El más visitado es probablemente la casa
+    await client.query(`
+      UPDATE device_frequent_places
+      SET place_type = 'home', confidence_score = 90
+      WHERE id = $1
+    `, [places.rows[0].id]);
+  }
+
+  if (places.rows.length > 1) {
+    // El segundo más visitado podría ser el trabajo
+    await client.query(`
+      UPDATE device_frequent_places
+      SET place_type = 'work', confidence_score = 70
+      WHERE id = $1
+    `, [places.rows[1].id]);
+  }
+}
+
+// ===================================================
+// BLOQUEAR DISPOSITIVO (CORREGIDO)
+// ===================================================
 exports.lockDevice = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -363,10 +500,11 @@ Email: ${reseller.email || ''}
 Para desbloquear tu dispositivo de inmediato
     `.trim();
 
+    // IMPORTANTE: Usar google_device_name, NO el id
     const androidManagement = await getAndroidManagementClient();
     
     await androidManagement.enterprises.devices.issueCommand({
-      name: device.google_device_name,
+      name: device.google_device_name, // ✅ Usar device name completo
       requestBody: {
         type: 'LOCK',
         lockReason: lockMessage
@@ -464,8 +602,11 @@ exports.unlockDevice = async (req, res) => {
 };
 
 // ===================================================
-// NUEVO: Reiniciar dispositivo
+// RESELLER CONTROLLER - PARTE 2
+// Agregar al final de resellerController-location.js
 // ===================================================
+
+// Reiniciar dispositivo
 exports.rebootDevice = async (req, res) => {
   try {
     const { id } = req.params;
@@ -497,8 +638,7 @@ exports.rebootDevice = async (req, res) => {
 
     res.json({
       message: 'Comando de reinicio enviado exitosamente',
-      device_id: id,
-      note: 'El dispositivo se reiniciará en unos momentos'
+      device_id: id
     });
   } catch (error) {
     console.error('Error reiniciando dispositivo:', error);
@@ -546,8 +686,7 @@ exports.releaseDevice = async (req, res) => {
     res.json({
       message: 'Dispositivo liberado exitosamente',
       device_id: id,
-      imei: device.imei,
-      note: 'La licencia queda vinculada a este IMEI y solo puede reactivarse con el mismo dispositivo'
+      imei: device.imei
     });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -555,6 +694,189 @@ exports.releaseDevice = async (req, res) => {
     res.status(500).json({ error: 'Error liberando dispositivo' });
   } finally {
     client.release();
+  }
+};
+
+// ===================================================
+// NUEVO: Obtener historial de ubicaciones
+// ===================================================
+exports.getDeviceLocationHistory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { limit = 50, days = 7 } = req.query;
+    const resellerId = req.user.id;
+
+    // Verificar que el dispositivo pertenece al reseller
+    const deviceCheck = await pool.query(
+      'SELECT id FROM devices WHERE id = $1 AND reseller_id = $2',
+      [id, resellerId]
+    );
+
+    if (deviceCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Dispositivo no encontrado' });
+    }
+
+    // Obtener historial
+    const history = await pool.query(`
+      SELECT 
+        latitude, 
+        longitude, 
+        accuracy, 
+        battery_level, 
+        recorded_at
+      FROM device_locations
+      WHERE device_id = $1 
+        AND recorded_at >= NOW() - INTERVAL '${days} days'
+      ORDER BY recorded_at DESC
+      LIMIT $2
+    `, [id, limit]);
+
+    res.json({
+      device_id: id,
+      total: history.rows.length,
+      history: history.rows
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo historial:', error);
+    res.status(500).json({ error: 'Error obteniendo historial de ubicaciones' });
+  }
+};
+
+// ===================================================
+// NUEVO: Obtener lugares frecuentes del dispositivo
+// ===================================================
+exports.getDeviceFrequentPlaces = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const resellerId = req.user.id;
+
+    // Verificar que el dispositivo pertenece al reseller
+    const deviceCheck = await pool.query(
+      'SELECT id, client_name FROM devices WHERE id = $1 AND reseller_id = $2',
+      [id, resellerId]
+    );
+
+    if (deviceCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Dispositivo no encontrado' });
+    }
+
+    const device = deviceCheck.rows[0];
+
+    // Obtener lugares frecuentes
+    const places = await pool.query(`
+      SELECT 
+        id,
+        place_type,
+        latitude,
+        longitude,
+        visit_count,
+        total_time_minutes,
+        confidence_score,
+        first_seen,
+        last_seen
+      FROM device_frequent_places
+      WHERE device_id = $1
+      ORDER BY confidence_score DESC, visit_count DESC
+    `, [id]);
+
+    res.json({
+      device_id: id,
+      client_name: device.client_name,
+      places: places.rows
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo lugares frecuentes:', error);
+    res.status(500).json({ error: 'Error obteniendo lugares frecuentes' });
+  }
+};
+
+// ===================================================
+// NUEVO: Obtener políticas disponibles
+// ===================================================
+exports.getAvailablePolicies = async (req, res) => {
+  try {
+    const androidManagement = await getAndroidManagementClient();
+    const enterpriseName = process.env.ANDROID_ENTERPRISE_NAME;
+
+    const response = await androidManagement.enterprises.policies.list({
+      parent: enterpriseName
+    });
+
+    const policies = response.data.policies || [];
+
+    const formattedPolicies = policies.map(policy => {
+      const policyNameParts = policy.name.split('/');
+      const policyId = policyNameParts[policyNameParts.length - 1];
+      
+      return {
+        id: policyId,
+        name: policyId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+        fullName: policy.name,
+        version: policy.version
+      };
+    });
+
+    res.json({ policies: formattedPolicies });
+  } catch (error) {
+    console.error('Error listando políticas:', error);
+    res.status(500).json({ 
+      error: 'Error obteniendo políticas',
+      details: error.message 
+    });
+  }
+};
+
+// ===================================================
+// NUEVO: Cambiar política de un dispositivo
+// ===================================================
+exports.changeDevicePolicy = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { policyName } = req.body;
+    const resellerId = req.user.id;
+
+    if (!policyName) {
+      return res.status(400).json({ error: 'Policy name es requerido' });
+    }
+
+    const deviceResult = await pool.query(
+      'SELECT * FROM devices WHERE id = $1 AND reseller_id = $2',
+      [id, resellerId]
+    );
+
+    if (deviceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Dispositivo no encontrado' });
+    }
+
+    const device = deviceResult.rows[0];
+
+    if (!device.google_device_name) {
+      return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
+    }
+
+    const androidManagement = await getAndroidManagementClient();
+    
+    await androidManagement.enterprises.devices.patch({
+      name: device.google_device_name,
+      updateMask: 'policyName',
+      requestBody: {
+        policyName: policyName
+      }
+    });
+
+    res.json({
+      message: 'Política cambiada exitosamente',
+      device_id: id,
+      new_policy: policyName
+    });
+  } catch (error) {
+    console.error('Error cambiando política:', error);
+    res.status(500).json({ 
+      error: 'Error cambiando política',
+      details: error.message 
+    });
   }
 };
 
@@ -593,8 +915,7 @@ exports.getDeviceLocation = async (req, res) => {
       hardware_info: deviceInfo.data.hardwareInfo,
       software_info: deviceInfo.data.softwareInfo,
       network_info: deviceInfo.data.networkInfo,
-      memory_info: deviceInfo.data.memoryInfo,
-      note: 'La ubicación GPS precisa requiere configuración en la política'
+      memory_info: deviceInfo.data.memoryInfo
     });
   } catch (error) {
     console.error('Error obteniendo información:', error);
@@ -602,29 +923,5 @@ exports.getDeviceLocation = async (req, res) => {
       error: 'Error obteniendo información del dispositivo',
       details: error.message 
     });
-  }
-};
-
-exports.getDeviceLocationHistory = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const resellerId = req.user.id;
-
-    const deviceCheck = await pool.query(
-      'SELECT id FROM devices WHERE id = $1 AND reseller_id = $2',
-      [id, resellerId]
-    );
-
-    if (deviceCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Dispositivo no encontrado' });
-    }
-
-    res.json({ 
-      history: [],
-      note: 'El historial de ubicaciones no está disponible con Android Management API'
-    });
-  } catch (error) {
-    console.error('Error obteniendo historial:', error);
-    res.status(500).json({ error: 'Error obteniendo historial de ubicaciones' });
   }
 };

@@ -1,20 +1,17 @@
 // ===================================================
-// WEBHOOK CONTROLLER CORREGIDO
-// Basado en el formato REAL de notificaciones que recibes
-// Archivo: controllers/webhookController.js
+// WEBHOOK CONTROLLER - VERSIÓN CON PROCESAMIENTO DE UBICACIÓN
+// Reemplazar: controllers/webhookController.js
 // ===================================================
 
 const pool = require('../config/database');
 const { google } = require('googleapis');
 
-// Helper para obtener credenciales de Google
 function getGoogleCredentials() {
   const base64Credentials = process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64;
   const jsonCredentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
   return JSON.parse(jsonCredentials);
 }
 
-// Helper para obtener cliente de Android Management
 async function getAndroidManagementClient() {
   const credentials = getGoogleCredentials();
   
@@ -29,10 +26,8 @@ async function getAndroidManagementClient() {
   });
 }
 
-// ===================================================
-// HANDLER PRINCIPAL
-// ===================================================
-const handlePubSubNotification = async (req, res) => {
+// Handler principal
+exports.handlePubSubNotification = async (req, res) => {
   console.log('\n' + '═'.repeat(80));
   console.log('📨 Webhook recibido de Android Enterprise');
   console.log('═'.repeat(80));
@@ -42,7 +37,7 @@ const handlePubSubNotification = async (req, res) => {
     
     if (!pubsubMessage || !pubsubMessage.data) {
       console.log('❌ Mensaje Pub/Sub sin data');
-      return res.status(200).send('OK'); // Responder 200 siempre
+      return res.status(200).send('OK');
     }
 
     const dataString = Buffer.from(pubsubMessage.data, 'base64').toString('utf-8');
@@ -51,19 +46,11 @@ const handlePubSubNotification = async (req, res) => {
     console.log('📩 Notificación recibida:');
     console.log(JSON.stringify(notification, null, 2));
 
-    // El formato real que recibes es:
-    // {
-    //   device: 'enterprises/.../devices/...',
-    //   user: 'enterprises/.../users/...',
-    //   usageLogEvents: [...]
-    // }
-
     const deviceName = notification.device;
     const userName = notification.user;
     const events = notification.usageLogEvents || [];
 
     console.log('📱 Device:', deviceName);
-    console.log('👤 User:', userName);
     console.log('📋 Events:', events.length);
 
     // Procesar eventos
@@ -72,10 +59,10 @@ const handlePubSubNotification = async (req, res) => {
       
       if (event.eventType === 'ENROLLMENT_COMPLETE') {
         await handleEnrollmentComplete(deviceName, userName, event);
-      } else if (event.eventType === 'COMPLIANCE_REPORT') {
-        await handleComplianceReport(deviceName, event);
-      } else {
-        console.log(`⚠️ Tipo de evento no manejado: ${event.eventType}`);
+      } else if (event.eventType === 'STATUS_REPORT') {
+        await handleStatusReport(deviceName, event);
+      } else if (event.eventType === 'LOCATION_UPDATE') {
+        await handleLocationUpdate(deviceName, event);
       }
     }
 
@@ -87,61 +74,40 @@ const handlePubSubNotification = async (req, res) => {
   } catch (error) {
     console.error('❌ Error procesando notificación:', error);
     console.error('Stack:', error.stack);
-    res.status(200).send('OK'); // Responder 200 siempre para evitar reintentos
+    res.status(200).send('OK');
   }
 };
 
-// ===================================================
-// HANDLER DE ENROLLMENT COMPLETE
-// ===================================================
+// Handler de enrollment
 async function handleEnrollmentComplete(deviceName, userName, event) {
   const client = await pool.connect();
   
   try {
     console.log('\n🆕 === PROCESANDO ENROLLMENT_COMPLETE ===');
-    console.log('📱 Device Name:', deviceName);
-    console.log('👤 User Name:', userName);
-    console.log('⏰ Event Time:', event.eventTime);
 
     await client.query('BEGIN');
 
-    // PASO 1: Obtener información completa del dispositivo desde Google
-    console.log('\n📡 Obteniendo información del dispositivo desde Google...');
-    
     const androidManagement = await getAndroidManagementClient();
     const deviceInfo = await androidManagement.enterprises.devices.get({
       name: deviceName
     });
 
     const device = deviceInfo.data;
-    console.log('✅ Información obtenida');
-
-    // PASO 2: Extraer datos importantes
+    
     const imei = device.networkInfo?.imei;
     const serialNumber = device.hardwareInfo?.serialNumber;
     const manufacturer = device.hardwareInfo?.manufacturer;
     const model = device.hardwareInfo?.model;
     const androidVersion = device.softwareInfo?.androidVersion;
-    const policyName = device.policyName;
 
-    console.log('\n📊 Datos del dispositivo:');
-    console.log('  IMEI:', imei);
-    console.log('  Serial:', serialNumber);
-    console.log('  Fabricante:', manufacturer);
-    console.log('  Modelo:', model);
-    console.log('  Android:', androidVersion);
-    console.log('  Política:', policyName);
+    console.log('📊 IMEI:', imei);
 
     if (!imei) {
-      console.error('❌ ERROR: No se pudo obtener el IMEI');
+      console.error('❌ No se pudo obtener el IMEI');
       await client.query('ROLLBACK');
       return;
     }
 
-    // PASO 3: Buscar enrollment token más reciente no usado
-    // Como la notificación no trae el token, buscamos el más reciente
-    console.log('\n🔍 Buscando enrollment token disponible...');
-    
     const tokenResult = await client.query(`
       SELECT * FROM enrollment_tokens 
       WHERE is_used = false 
@@ -150,10 +116,7 @@ async function handleEnrollmentComplete(deviceName, userName, event) {
     `);
 
     if (tokenResult.rows.length === 0) {
-      console.error('❌ ERROR: No hay tokens disponibles');
-      console.log('💡 Esto puede indicar que:');
-      console.log('   1. El dispositivo se enroló con un token antiguo');
-      console.log('   2. Necesitas crear el dispositivo manualmente');
+      console.error('❌ No hay tokens disponibles');
       await client.query('ROLLBACK');
       return;
     }
@@ -162,14 +125,8 @@ async function handleEnrollmentComplete(deviceName, userName, event) {
     const licenseId = token.license_id;
     const resellerId = token.reseller_id;
 
-    console.log('✅ Token encontrado:');
-    console.log('  Token:', token.token);
-    console.log('  License ID:', licenseId);
-    console.log('  Reseller ID:', resellerId);
+    console.log('✅ Token encontrado - License:', licenseId);
 
-    // PASO 4: Verificar si el dispositivo ya existe
-    console.log('\n🔍 Verificando si el dispositivo ya existe...');
-    
     const existingDevice = await client.query(
       'SELECT * FROM devices WHERE imei = $1 OR google_device_name = $2',
       [imei, deviceName]
@@ -190,98 +147,280 @@ async function handleEnrollmentComplete(deviceName, userName, event) {
         WHERE imei = $7
       `, [deviceName, serialNumber, manufacturer, model, androidVersion, 'ACTIVO', imei]);
       
-      console.log('✅ Dispositivo actualizado');
       await client.query('COMMIT');
       return;
     }
 
-    // PASO 5: Insertar nuevo dispositivo
-    console.log('\n💾 Insertando dispositivo en BD...');
-    
+    // Insertar nuevo dispositivo
     const insertResult = await client.query(`
-      INSERT INTO devices (
-        google_device_name,
-        imei,
-        serial_number,
-        manufacturer,
-        model,
-        android_version,
-        reseller_id,
-        license_id,
-        status,
-        enrolled_at,
-        last_connection,
-        is_online
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), true)
-      RETURNING id
-    `, [
-      deviceName,
+    INSERT INTO devices (
       imei,
-      serialNumber,
       manufacturer,
       model,
-      androidVersion,
-      resellerId,
-      licenseId,
-      'ACTIVO'
-    ]);
+      android_version,
+      reseller_id,
+      license_id,
+      status,
+      enrolled_at,
+      last_connection,
+      is_online,
+      google_device_name,
+      serial_number
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), true, $8, $9)
+    RETURNING id
+  `, [
+    imei,
+    manufacturer,
+    model,
+    androidVersion,
+    resellerId,
+    licenseId,
+    'ACTIVO',
+    deviceName,
+    serialNumber
+  ]);
 
     const deviceId = insertResult.rows[0].id;
     console.log('✅ Dispositivo insertado con ID:', deviceId);
 
-    // PASO 6: Actualizar licencia
-    console.log('\n🔄 Actualizando licencia...');
-    
+    // Actualizar licencia
     await client.query(`
       UPDATE licenses 
       SET status = $1, device_imei = $2, activated_at = NOW()
       WHERE id = $3
     `, ['EN_USO', imei, licenseId]);
     
-    console.log('✅ Licencia actualizada a EN_USO');
+    console.log('✅ Licencia actualizada');
 
-    // PASO 7: Marcar token como usado
-    console.log('\n🔄 Marcando token como usado...');
-    
+    // Marcar token como usado
     await client.query(
       'UPDATE enrollment_tokens SET is_used = true WHERE id = $1',
       [token.id]
     );
-    
-    console.log('✅ Token marcado como usado');
 
     await client.query('COMMIT');
-    console.log('\n🎉 === ENROLLMENT COMPLETADO EXITOSAMENTE ===\n');
+    console.log('🎉 ENROLLMENT COMPLETADO\n');
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('\n❌ === ERROR EN ENROLLMENT ===');
-    console.error('Error:', error.message);
-    console.error('Stack:', error.stack);
-    console.error('═'.repeat(80) + '\n');
+    console.error('❌ Error en enrollment:', error);
   } finally {
     client.release();
   }
 }
 
 // ===================================================
-// HANDLER DE COMPLIANCE REPORT
+// NUEVO: Handler de actualización de estado (con ubicación)
 // ===================================================
-async function handleComplianceReport(deviceName, event) {
+async function handleStatusReport(deviceName, event) {
   try {
-    console.log('\n📊 === PROCESANDO COMPLIANCE_REPORT ===');
-    console.log('📱 Device:', deviceName);
+    console.log('\n📈 === PROCESANDO STATUS_REPORT ===');
     
-    // Actualizar última conexión
-    await pool.query(
-      'UPDATE devices SET last_connection = NOW() WHERE google_device_name = $1',
+    // Obtener información actualizada del dispositivo
+    const androidManagement = await getAndroidManagementClient();
+    const deviceInfo = await androidManagement.enterprises.devices.get({
+      name: deviceName
+    });
+
+    const device = deviceInfo.data;
+
+    // Buscar dispositivo en BD
+    const deviceResult = await pool.query(
+      'SELECT id FROM devices WHERE google_device_name = $1',
       [deviceName]
     );
-    
-    console.log('✅ Última conexión actualizada\n');
+
+    if (deviceResult.rows.length === 0) {
+      console.log('⚠️ Dispositivo no encontrado en BD');
+      return;
+    }
+
+    const deviceId = deviceResult.rows[0].id;
+
+    // Extraer datos de ubicación y batería
+    let batteryLevel = null;
+    if (device.powerManagementEvents && device.powerManagementEvents.length > 0) {
+      const lastEvent = device.powerManagementEvents[0];
+      batteryLevel = lastEvent.batteryLevel;
+    }
+
+    // Intentar obtener ubicación
+    let latitude = null;
+    let longitude = null;
+    let accuracy = null;
+
+    if (device.displays && device.displays.length > 0) {
+      const display = device.displays[0];
+      if (display.location) {
+        latitude = display.location.latitude;
+        longitude = display.location.longitude;
+        accuracy = display.location.accuracy;
+      }
+    }
+
+    // Actualizar en BD
+    if (latitude && longitude) {
+      console.log('📍 Ubicación encontrada:', latitude, longitude);
+      await updateDeviceLocation(deviceId, latitude, longitude, accuracy, batteryLevel);
+    } else {
+      // Solo actualizar última conexión y batería
+      await pool.query(`
+        UPDATE devices 
+        SET last_connection = NOW(), 
+            battery_level = $1
+        WHERE id = $2
+      `, [batteryLevel, deviceId]);
+    }
+
+    console.log('✅ Status actualizado\n');
 
   } catch (error) {
-    console.error('❌ Error en compliance report:', error);
+    console.error('❌ Error en status report:', error);
+  }
+}
+
+// ===================================================
+// NUEVO: Handler específico de actualización de ubicación
+// ===================================================
+async function handleLocationUpdate(deviceName, event) {
+  try {
+    console.log('\n📍 === PROCESANDO LOCATION_UPDATE ===');
+    
+    // Buscar dispositivo en BD
+    const deviceResult = await pool.query(
+      'SELECT id FROM devices WHERE google_device_name = $1',
+      [deviceName]
+    );
+
+    if (deviceResult.rows.length === 0) {
+      console.log('⚠️ Dispositivo no encontrado en BD');
+      return;
+    }
+
+    const deviceId = deviceResult.rows[0].id;
+
+    // Obtener ubicación del evento
+    if (event.location) {
+      const latitude = event.location.latitude;
+      const longitude = event.location.longitude;
+      const accuracy = event.location.accuracy;
+      
+      console.log('📍 Nueva ubicación:', latitude, longitude);
+      await updateDeviceLocation(deviceId, latitude, longitude, accuracy);
+    }
+
+    console.log('✅ Ubicación actualizada\n');
+
+  } catch (error) {
+    console.error('❌ Error en location update:', error);
+  }
+}
+
+// ===================================================
+// Helper para actualizar ubicación
+// ===================================================
+async function updateDeviceLocation(deviceId, latitude, longitude, accuracy = null, batteryLevel = null) {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+
+    // Actualizar ubicación actual
+    await client.query(`
+      UPDATE devices 
+      SET last_location_lat = $1, 
+          last_location_lon = $2, 
+          last_location_accuracy = $3,
+          last_location_time = NOW(),
+          battery_level = $4,
+          last_connection = NOW()
+      WHERE id = $5
+    `, [latitude, longitude, accuracy, batteryLevel, deviceId]);
+
+    // Guardar en historial
+    await client.query(`
+      INSERT INTO device_locations 
+      (device_id, latitude, longitude, accuracy, battery_level, recorded_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+    `, [deviceId, latitude, longitude, accuracy, batteryLevel]);
+
+    // Detectar lugares frecuentes
+    await detectFrequentPlace(client, deviceId, latitude, longitude);
+
+    await client.query('COMMIT');
+    console.log('✅ Ubicación guardada');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error guardando ubicación:', error);
+  } finally {
+    client.release();
+  }
+}
+
+// Detectar lugares frecuentes
+async function detectFrequentPlace(client, deviceId, latitude, longitude) {
+  const RADIUS_THRESHOLD = 100; // metros
+
+  // Buscar si hay un lugar frecuente cercano
+  const nearbyPlaces = await client.query(`
+    SELECT *, 
+      (6371000 * acos(
+        cos(radians($2)) * cos(radians(latitude)) * 
+        cos(radians(longitude) - radians($3)) + 
+        sin(radians($2)) * sin(radians(latitude))
+      )) AS distance
+    FROM device_frequent_places
+    WHERE device_id = $1
+    HAVING distance < $4
+    ORDER BY distance
+    LIMIT 1
+  `, [deviceId, latitude, longitude, RADIUS_THRESHOLD]);
+
+  if (nearbyPlaces.rows.length > 0) {
+    // Lugar existente
+    const place = nearbyPlaces.rows[0];
+    await client.query(`
+      UPDATE device_frequent_places
+      SET visit_count = visit_count + 1,
+          last_seen = NOW(),
+          updated_at = NOW()
+      WHERE id = $1
+    `, [place.id]);
+  } else {
+    // Nuevo lugar
+    await client.query(`
+      INSERT INTO device_frequent_places
+      (device_id, latitude, longitude, visit_count, first_seen, last_seen, place_type)
+      VALUES ($1, $2, $3, 1, NOW(), NOW(), 'frequent')
+    `, [deviceId, latitude, longitude]);
+  }
+
+  // Recalcular tipos
+  await calculatePlaceTypes(client, deviceId);
+}
+
+// Calcular tipos de lugares
+async function calculatePlaceTypes(client, deviceId) {
+  const places = await client.query(`
+    SELECT * FROM device_frequent_places
+    WHERE device_id = $1
+    ORDER BY visit_count DESC
+  `, [deviceId]);
+
+  if (places.rows.length > 0) {
+    await client.query(`
+      UPDATE device_frequent_places
+      SET place_type = 'home', confidence_score = 90
+      WHERE id = $1
+    `, [places.rows[0].id]);
+  }
+
+  if (places.rows.length > 1) {
+    await client.query(`
+      UPDATE device_frequent_places
+      SET place_type = 'work', confidence_score = 70
+      WHERE id = $1
+    `, [places.rows[1].id]);
   }
 }
 

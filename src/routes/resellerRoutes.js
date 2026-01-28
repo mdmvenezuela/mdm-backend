@@ -1,30 +1,35 @@
 const express = require('express');
 const router = express.Router();
 const resellerController = require('../controllers/resellerController');
-const { authenticateToken, isReseller } = require('../middleware/auth');
+const { authenticateToken } = require('../middleware/auth');
 
-// Todas las rutas requieren autenticación y rol de reseller
-router.use(authenticateToken, isReseller);
+// Dashboard
+router.get('/dashboard', authenticateToken, resellerController.getDashboard);
 
-router.get('/dashboard', resellerController.getDashboard);
-router.post('/qr/generate', resellerController.generateEnrollmentQR);
-router.get('/devices', resellerController.getDevices);
-router.get('/device/:id', resellerController.getDeviceDetail);
-router.post('/device/:id/lock', resellerController.lockDevice);
-//router.post('/devices/:id/disable-lock', authenticateToken, resellerController.disableScreenLock);
-router.post('/device/:id/unlock', resellerController.unlockDevice);
-router.delete('/device/:id/release', resellerController.releaseDevice);
-router.get('/device/:id/location/history', resellerController.getDeviceLocationHistory);
-// Obtener políticas disponibles
-router.get('/policies/available', authenticateToken, resellerController.getAvailablePolicies);
+// Enrollment QR
+router.post('/qr/generate', authenticateToken, resellerController.generateEnrollmentQR);
 
-// Cambiar política de un dispositivo
-router.post('/device/:id/change-policy', authenticateToken, resellerController.changeDevicePolicy);
-
-// Reiniciar dispositivo
-router.post('/device/:id/reboot', authenticateToken, resellerController.rebootDevice);
-
-// Obtener detalle completo del dispositivo
+// Dispositivos
+router.get('/devices', authenticateToken, resellerController.getDevices);
 router.get('/device/:id/detail', authenticateToken, resellerController.getDeviceDetail);
+
+// Control de dispositivos
+router.post('/device/:id/lock', authenticateToken, resellerController.lockDevice);
+router.post('/device/:id/unlock', authenticateToken, resellerController.unlockDevice);
+router.post('/device/:id/reboot', authenticateToken, resellerController.rebootDevice);
+router.delete('/device/:id/release', authenticateToken, resellerController.releaseDevice);
+
+// Edición de información del cliente
+router.put('/device/:id/client-info', authenticateToken, resellerController.updateClientInfo);
+
+// Ubicación
+router.post('/device/:id/request-location', authenticateToken, resellerController.requestDeviceLocation);
+router.get('/device/:id/location-history', authenticateToken, resellerController.getDeviceLocationHistory);
+router.get('/device/:id/frequent-places', authenticateToken, resellerController.getDeviceFrequentPlaces);
+router.get('/device/:id/location', authenticateToken, resellerController.getDeviceLocation);
+
+// Políticas
+router.get('/policies/available', authenticateToken, resellerController.getAvailablePolicies);
+router.post('/device/:id/change-policy', authenticateToken, resellerController.changeDevicePolicy);
 
 module.exports = router;

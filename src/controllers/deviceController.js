@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const { validateUnlockCode } = require('../utils/unlockCodesHelper');
 
 // Registrar dispositivo (llamado por la app Android)
 exports.registerDevice = async (req, res) => {
@@ -124,11 +125,91 @@ exports.registerDevice = async (req, res) => {
   }
 };
 
+// ===================================================
+// NUEVO: Registrar/Actualizar token FCM
+// ===================================================
+exports.registerFcmToken = async (req, res) => {
+  try {
+    const { device_id, fcm_token } = req.body;
+
+    if (!device_id || !fcm_token) {
+      return res.status(400).json({ error: 'device_id y fcm_token requeridos' });
+    }
+
+    // Verificar si ya existe un token para este dispositivo
+    const existing = await pool.query(
+      'SELECT id FROM device_fcm_tokens WHERE device_id = $1',
+      [device_id]
+    );
+
+    if (existing.rows.length > 0) {
+      // Actualizar token existente
+      await pool.query(
+        'UPDATE device_fcm_tokens SET fcm_token = $1, updated_at = NOW() WHERE device_id = $2',
+        [fcm_token, device_id]
+      );
+      console.log(`✅ Token FCM actualizado para dispositivo ${device_id}`);
+    } else {
+      // Insertar nuevo token
+      await pool.query(
+        'INSERT INTO device_fcm_tokens (device_id, fcm_token) VALUES ($1, $2)',
+        [device_id, fcm_token]
+      );
+      console.log(`✅ Token FCM registrado para dispositivo ${device_id}`);
+    }
+
+    res.json({ message: 'Token FCM registrado exitosamente' });
+  } catch (error) {
+    console.error('Error registrando token FCM:', error);
+    res.status(500).json({ error: 'Error registrando token FCM' });
+  }
+};
+
+// ===================================================
+// NUEVO: Validar código de desbloqueo
+// ===================================================
+exports.validateUnlock = async (req, res) => {
+  try {
+    const { device_id, code } = req.body;
+
+    if (!device_id || !code) {
+      return res.status(400).json({ error: 'device_id y code requeridos' });
+    }
+
+    // Validar el código usando la función helper
+    const validation = await validateUnlockCode(device_id, code);
+
+    if (validation.valid) {
+      // Código válido - desbloquear dispositivo
+      await pool.query(
+        "UPDATE devices SET status = 'ACTIVO', lock_message = NULL WHERE id = $1",
+        [device_id]
+      );
+
+      return res.json({
+        success: true,
+        message: 'Dispositivo desbloqueado exitosamente'
+      });
+    } else {
+      // Código inválido
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+        usedAt: validation.usedAt,
+        expiresAt: validation.expiresAt
+      });
+    }
+  } catch (error) {
+    console.error('Error validando código de desbloqueo:', error);
+    res.status(500).json({ error: 'Error validando código' });
+  }
+};
+
 // Actualizar ubicación del dispositivo
 exports.updateLocation = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { device_id, latitude, longitude, battery_level, network_type } = req.body;
+    const { device_id, latitude, longitude, battery_level, network_type, accuracy } = req.body;
 
     if (!device_id || !latitude || !longitude) {
       return res.status(400).json({ error: 'device_id, latitude y longitude requeridos' });
@@ -141,17 +222,19 @@ exports.updateLocation = async (req, res) => {
       UPDATE devices 
       SET last_location_lat = $1, 
           last_location_lon = $2, 
-          battery_level = $3,
+          last_location_accuracy = $3,
+          last_location_time = NOW(),
+          battery_level = $4,
           last_connection = NOW(),
           is_online = true
-      WHERE id = $4
-    `, [latitude, longitude, battery_level, device_id]);
+      WHERE id = $5
+    `, [latitude, longitude, accuracy || null, battery_level, device_id]);
 
-    // Guardar en historial
+    // Guardar en historial (usando la nueva tabla device_locations)
     await client.query(`
-      INSERT INTO location_history (device_id, latitude, longitude, battery_level, network_type)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [device_id, latitude, longitude, battery_level, network_type]);
+      INSERT INTO device_locations (device_id, latitude, longitude, accuracy, battery_level, recorded_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+    `, [device_id, latitude, longitude, accuracy || null, battery_level]);
 
     await client.query('COMMIT');
 

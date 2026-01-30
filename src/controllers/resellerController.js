@@ -1,6 +1,7 @@
 // ===================================================
-// RESELLER CONTROLLER - VERSIÓN COMPLETAMENTE CORREGIDA
-// Todas las llamadas a Android Enterprise usan google_device_name
+// RESELLER CONTROLLER - VERSIÓN CON FCM Y CÓDIGOS ÚNICOS
+// Mantiene Android Enterprise para enrollment
+// Usa FCM para comandos de bloqueo/desbloqueo
 // Archivo: controllers/resellerController.js
 // ===================================================
 
@@ -8,6 +9,8 @@ const pool = require('../config/database');
 const { createEnrollmentToken } = require('../utils/androidManagement');
 const QRCode = require('qrcode');
 const { google } = require('googleapis');
+const { sendLockCommand, sendUnlockCommand, requestLocation, sendRebootCommand } = require('../utils/fcmHelper');
+const { createUnlockCode, getActiveUnlockCode } = require('../utils/unlockCodesHelper');
 
 // ===================================================
 // HELPER: Cliente de Android Management
@@ -73,7 +76,7 @@ exports.getDashboard = async (req, res) => {
 };
 
 // ===================================================
-// Generar QR de enrollment
+// Generar QR de enrollment (SIN CAMBIOS)
 // ===================================================
 exports.generateEnrollmentQR = async (req, res) => {
   const client = await pool.connect();
@@ -135,7 +138,7 @@ exports.generateEnrollmentQR = async (req, res) => {
 };
 
 // ===================================================
-// Obtener dispositivos del reseller
+// Obtener dispositivos del reseller (SIN CAMBIOS)
 // ===================================================
 exports.getDevices = async (req, res) => {
   try {
@@ -160,14 +163,14 @@ exports.getDevices = async (req, res) => {
 };
 
 // ===================================================
-// CORREGIDO: Obtener detalle del dispositivo
+// MODIFICADO: Obtener detalle del dispositivo
+// Ahora incluye código de desbloqueo activo
 // ===================================================
 exports.getDeviceDetail = async (req, res) => {
   try {
     const { id } = req.params;
     const resellerId = req.user.id;
 
-    // Obtener dispositivo de BD
     const result = await pool.query(`
       SELECT 
         d.*,
@@ -184,12 +187,28 @@ exports.getDeviceDetail = async (req, res) => {
 
     const device = result.rows[0];
 
+    // ✅ NUEVO: Obtener código de desbloqueo activo si existe
+    const activeCode = await getActiveUnlockCode(id);
+    if (activeCode) {
+      device.active_unlock_code = {
+        code: activeCode.code,
+        expires_at: activeCode.expires_at,
+        created_at: activeCode.created_at
+      };
+    }
+
+    // Verificar si tiene token FCM registrado
+    const fcmToken = await pool.query(
+      'SELECT fcm_token FROM device_fcm_tokens WHERE device_id = $1',
+      [id]
+    );
+    device.has_fcm_token = fcmToken.rows.length > 0;
+
     // Si tiene google_device_name, obtener info de Android Enterprise
     if (device.google_device_name) {
       try {
         const androidManagement = await getAndroidManagementClient();
         
-        // ✅ CORRECTO: Usar google_device_name
         const deviceInfo = await androidManagement.enterprises.devices.get({
           name: device.google_device_name
         });
@@ -203,13 +222,6 @@ exports.getDeviceDetail = async (req, res) => {
           enrollmentTime: deviceInfo.data.enrollmentTime,
           hardwareInfo: deviceInfo.data.hardwareInfo,
           softwareInfo: deviceInfo.data.softwareInfo,
-          applicationReports: deviceInfo.data.applicationReports,
-          memoryInfo: deviceInfo.data.memoryInfo,
-          networkInfo: deviceInfo.data.networkInfo,
-          powerManagementEvents: deviceInfo.data.powerManagementEvents,
-          displays: deviceInfo.data.displays,
-          user: deviceInfo.data.user,
-          userName: deviceInfo.data.userName,
         };
 
         // Actualizar ubicación si está disponible
@@ -217,7 +229,6 @@ exports.getDeviceDetail = async (req, res) => {
         if (displays && displays.length > 0 && displays[0].location) {
           const location = displays[0].location;
           
-          // Actualizar en BD
           await pool.query(`
             UPDATE devices 
             SET last_location_lat = $1, 
@@ -230,13 +241,6 @@ exports.getDeviceDetail = async (req, res) => {
           device.last_location_lat = location.latitude;
           device.last_location_lon = location.longitude;
           device.last_location_accuracy = location.accuracy;
-        }
-
-        // Actualizar batería si está disponible
-        if (deviceInfo.data.powerManagementEvents && deviceInfo.data.powerManagementEvents.length > 0) {
-          const batteryLevel = deviceInfo.data.powerManagementEvents[0].batteryLevel;
-          await pool.query('UPDATE devices SET battery_level = $1 WHERE id = $2', [batteryLevel, device.id]);
-          device.battery_level = batteryLevel;
         }
 
       } catch (error) {
@@ -265,7 +269,7 @@ exports.getDeviceDetail = async (req, res) => {
 };
 
 // ===================================================
-// NUEVO: Actualizar información del cliente
+// Actualizar información del cliente (SIN CAMBIOS)
 // ===================================================
 exports.updateClientInfo = async (req, res) => {
   try {
@@ -301,7 +305,8 @@ exports.updateClientInfo = async (req, res) => {
 };
 
 // ===================================================
-// CORREGIDO: Solicitar ubicación en tiempo real
+// MODIFICADO: Solicitar ubicación en tiempo real
+// Ahora usa FCM además de Android Management
 // ===================================================
 exports.requestDeviceLocation = async (req, res) => {
   try {
@@ -319,16 +324,26 @@ exports.requestDeviceLocation = async (req, res) => {
 
     const device = deviceResult.rows[0];
 
+    // ✅ NUEVO: Intentar con FCM primero (más rápido)
+    const fcmResult = await requestLocation(id);
+    
+    if (fcmResult.success) {
+      return res.json({
+        message: 'Solicitud de ubicación enviada vía FCM',
+        device_id: id,
+        method: 'FCM'
+      });
+    }
+
+    // Si FCM falla, usar Android Management API como fallback
     if (!device.google_device_name) {
-      return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
+      return res.status(400).json({ error: 'Dispositivo no tiene FCM ni Android Enterprise' });
     }
 
     const androidManagement = await getAndroidManagementClient();
     
-    // ✅ CORRECTO: Usar google_device_name
-    console.log('📍 Solicitando ubicación para:', device.google_device_name);
+    console.log('📍 Solicitando ubicación vía Android Enterprise:', device.google_device_name);
     
-    // Solicitar estado del dispositivo
     await androidManagement.enterprises.devices.issueCommand({
       name: device.google_device_name,
       requestBody: {
@@ -336,48 +351,10 @@ exports.requestDeviceLocation = async (req, res) => {
       }
     });
 
-    // Esperar un momento y obtener info actualizada
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    const deviceInfo = await androidManagement.enterprises.devices.get({
-      name: device.google_device_name
-    });
-
-    let location = null;
-    
-    if (deviceInfo.data.displays && deviceInfo.data.displays.length > 0) {
-      const display = deviceInfo.data.displays[0];
-      if (display.location) {
-        location = {
-          latitude: display.location.latitude,
-          longitude: display.location.longitude,
-          accuracy: display.location.accuracy
-        };
-        
-        // Guardar en BD
-        await pool.query(`
-          UPDATE devices 
-          SET last_location_lat = $1, 
-              last_location_lon = $2,
-              last_location_accuracy = $3,
-              last_location_time = NOW()
-          WHERE id = $4
-        `, [location.latitude, location.longitude, location.accuracy, device.id]);
-
-        // Guardar en historial
-        await pool.query(`
-          INSERT INTO device_locations 
-          (device_id, latitude, longitude, accuracy, recorded_at)
-          VALUES ($1, $2, $3, $4, NOW())
-        `, [device.id, location.latitude, location.longitude, location.accuracy]);
-      }
-    }
-
     res.json({
-      message: 'Ubicación solicitada',
+      message: 'Ubicación solicitada vía Android Enterprise',
       device_id: id,
-      location: location,
-      last_status_time: deviceInfo.data.lastStatusReportTime
+      method: 'Android Enterprise'
     });
 
   } catch (error) {
@@ -390,7 +367,7 @@ exports.requestDeviceLocation = async (req, res) => {
 };
 
 // ===================================================
-// CORREGIDO: Bloquear dispositivo
+// ✨ NUEVO: Bloquear dispositivo con FCM y código único
 // ===================================================
 exports.lockDevice = async (req, res) => {
   const client = await pool.connect();
@@ -412,11 +389,6 @@ exports.lockDevice = async (req, res) => {
     }
 
     const device = deviceResult.rows[0];
-    
-    if (!device.google_device_name) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
-    }
 
     const resellerInfo = await client.query(
       'SELECT business_name, phone, email FROM resellers WHERE id = $1',
@@ -442,20 +414,14 @@ Email: ${reseller.email || ''}
 Para desbloquear tu dispositivo de inmediato
     `.trim();
 
-    const androidManagement = await getAndroidManagementClient();
+    // ✅ NUEVO: Enviar comando de bloqueo vía FCM
+    const fcmResult = await sendLockCommand(id, lockMessage);
     
-    // ✅ CORRECTO: Usar google_device_name
-    console.log('🔒 Bloqueando dispositivo:', device.google_device_name);
-    
-    await androidManagement.enterprises.devices.issueCommand({
-      name: device.google_device_name,  // ✅ NO el ID de BD
-      requestBody: {
-        type: 'LOCK'
-      }
-    });
+    console.log('🔒 Bloqueando dispositivo vía FCM:', fcmResult.success ? 'OK' : 'FAILED');
 
+    // Actualizar estado en BD
     await client.query(
-      'UPDATE devices SET status = $1, lock_message = $2, unlock_code = NULL WHERE id = $3',
+      'UPDATE devices SET status = $1, lock_message = $2 WHERE id = $3',
       ['BLOQUEADO', lockMessage, id]
     );
 
@@ -464,7 +430,8 @@ Para desbloquear tu dispositivo de inmediato
     res.json({
       message: 'Dispositivo bloqueado exitosamente',
       device_id: id,
-      lock_message: lockMessage
+      lock_message: lockMessage,
+      fcm_sent: fcmResult.success
     });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -479,14 +446,13 @@ Para desbloquear tu dispositivo de inmediato
 };
 
 // ===================================================
-// CORREGIDO: Desbloquear dispositivo
+// ✨ NUEVO: Desbloquear dispositivo con código único
 // ===================================================
 exports.unlockDevice = async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
     const resellerId = req.user.id;
-    const { new_password } = req.body;
 
     await client.query('BEGIN');
 
@@ -502,49 +468,39 @@ exports.unlockDevice = async (req, res) => {
 
     const device = deviceResult.rows[0];
 
-    if (!device.google_device_name) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
-    }
+    // ✅ NUEVO: Generar código único de desbloqueo
+    const unlockCode = await createUnlockCode(id, resellerId, 24); // Expira en 24 horas
 
-    const unlockPassword = new_password || Math.floor(100000 + Math.random() * 900000).toString();
+    console.log(`🔓 Código de desbloqueo generado: ${unlockCode}`);
 
-    const androidManagement = await getAndroidManagementClient();
+    // ✅ NUEVO: Enviar notificación FCM con el código
+    const fcmResult = await sendUnlockCommand(id, unlockCode);
     
-    // ✅ CORRECTO: Usar google_device_name
-    console.log('🔓 Desbloqueando dispositivo:', device.google_device_name);
-    
-    await androidManagement.enterprises.devices.issueCommand({
-      name: device.google_device_name,  // ✅ NO el ID de BD
-      requestBody: {
-        type: 'RESET_PASSWORD',
-        newPassword: unlockPassword,
-        resetPasswordFlags: [
-      'REQUIRE_ENTRY',
-      'DISALLOW_REUSE'
-    ]
-      }
-    });
+    console.log('📨 Notificación FCM enviada:', fcmResult.success ? 'OK' : 'FAILED');
 
+    // Actualizar estado en BD (pero NO desbloquear aún)
+    // Se desbloqueará cuando la app valide el código
     await client.query(
-      'UPDATE devices SET status = $1, unlock_code = $2, lock_message = NULL WHERE id = $3',
-      ['ACTIVO', unlockPassword, id]
+      'UPDATE devices SET lock_message = NULL WHERE id = $1',
+      [id]
     );
 
     await client.query('COMMIT');
 
     res.json({
-      message: 'Dispositivo desbloqueado exitosamente',
+      message: 'Código de desbloqueo generado exitosamente',
       device_id: id,
-      unlock_code: unlockPassword,
+      unlock_code: unlockCode,
       client_name: device.client_name,
-      client_phone: device.client_phone
+      client_phone: device.client_phone,
+      fcm_sent: fcmResult.success,
+      expires_in_hours: 24
     });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error desbloqueando dispositivo:', error);
     res.status(500).json({ 
-      error: 'Error desbloqueando dispositivo',
+      error: 'Error generando código de desbloqueo',
       details: error.message 
     });
   } finally {
@@ -553,7 +509,7 @@ exports.unlockDevice = async (req, res) => {
 };
 
 // ===================================================
-// CORREGIDO: Reiniciar dispositivo
+// MODIFICADO: Reiniciar dispositivo con FCM
 // ===================================================
 exports.rebootDevice = async (req, res) => {
   try {
@@ -569,27 +525,13 @@ exports.rebootDevice = async (req, res) => {
       return res.status(404).json({ error: 'Dispositivo no encontrado' });
     }
 
-    const device = deviceResult.rows[0];
-
-    if (!device.google_device_name) {
-      return res.status(400).json({ error: 'Dispositivo no enrollado en Android Enterprise' });
-    }
-
-    const androidManagement = await getAndroidManagementClient();
-    
-    // ✅ CORRECTO: Usar google_device_name
-    console.log('🔄 Reiniciando dispositivo:', device.google_device_name);
-    
-    await androidManagement.enterprises.devices.issueCommand({
-      name: device.google_device_name,  // ✅ NO el ID de BD
-      requestBody: {
-        type: 'REBOOT'
-      }
-    });
+    // ✅ NUEVO: Enviar comando vía FCM
+    const fcmResult = await sendRebootCommand(id);
 
     res.json({
-      message: 'Comando de reinicio enviado exitosamente',
-      device_id: id
+      message: 'Comando de reinicio enviado',
+      device_id: id,
+      fcm_sent: fcmResult.success
     });
   } catch (error) {
     console.error('Error reiniciando dispositivo:', error);
@@ -601,7 +543,7 @@ exports.rebootDevice = async (req, res) => {
 };
 
 // ===================================================
-// CORREGIDO: Cambiar política
+// Cambiar política (SIN CAMBIOS)
 // ===================================================
 exports.changeDevicePolicy = async (req, res) => {
   try {
@@ -630,11 +572,10 @@ exports.changeDevicePolicy = async (req, res) => {
 
     const androidManagement = await getAndroidManagementClient();
     
-    // ✅ CORRECTO: Usar google_device_name
     console.log('🛡️ Cambiando política:', device.google_device_name, '->', policyName);
     
     await androidManagement.enterprises.devices.patch({
-      name: device.google_device_name,  // ✅ NO el ID de BD
+      name: device.google_device_name,
       updateMask: 'policyName',
       requestBody: {
         policyName: policyName
@@ -655,6 +596,7 @@ exports.changeDevicePolicy = async (req, res) => {
   }
 };
 
+// Liberar dispositivo, historial, lugares frecuentes, políticas (SIN CAMBIOS)
 exports.releaseDevice = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -675,14 +617,12 @@ exports.releaseDevice = async (req, res) => {
 
     const device = deviceResult.rows[0];
 
-    // Actualizar licencia a VINCULADA
     await client.query(`
       UPDATE licenses 
       SET status = 'VINCULADA', device_imei = $1
       WHERE id = $2
     `, [device.imei, device.license_id]);
 
-    // Actualizar dispositivo a LIBERADO
     await client.query(
       'UPDATE devices SET status = $1 WHERE id = $2',
       ['LIBERADO', id]
@@ -704,9 +644,6 @@ exports.releaseDevice = async (req, res) => {
   }
 };
 
-// ===================================================
-// Obtener historial de ubicaciones
-// ===================================================
 exports.getDeviceLocationHistory = async (req, res) => {
   try {
     const { id } = req.params;
@@ -748,9 +685,6 @@ exports.getDeviceLocationHistory = async (req, res) => {
   }
 };
 
-// ===================================================
-// Obtener lugares frecuentes
-// ===================================================
 exports.getDeviceFrequentPlaces = async (req, res) => {
   try {
     const { id } = req.params;
@@ -795,9 +729,6 @@ exports.getDeviceFrequentPlaces = async (req, res) => {
   }
 };
 
-// ===================================================
-// Obtener políticas disponibles
-// ===================================================
 exports.getAvailablePolicies = async (req, res) => {
   try {
     const androidManagement = await getAndroidManagementClient();
@@ -835,9 +766,6 @@ exports.getAvailablePolicies = async (req, res) => {
   }
 };
 
-// ===================================================
-// Obtener ubicación actual (alternativa)
-// ===================================================
 exports.getDeviceLocation = async (req, res) => {
   try {
     const { id } = req.params;
@@ -860,7 +788,6 @@ exports.getDeviceLocation = async (req, res) => {
 
     const androidManagement = await getAndroidManagementClient();
     
-    // ✅ CORRECTO: Usar google_device_name
     const deviceInfo = await androidManagement.enterprises.devices.get({
       name: device.google_device_name
     });

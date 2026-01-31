@@ -6,6 +6,7 @@
 // ===================================================
 
 const pool = require('../config/database');
+const { createEnrollmentToken } = require('../utils/androidManagement');
 const QRCode = require('qrcode');
 const { google } = require('googleapis');
 const { sendLockCommand, sendUnlockCommand, requestLocation, sendRebootCommand } = require('../utils/fcmHelper');
@@ -77,40 +78,65 @@ exports.getDashboard = async (req, res) => {
 // ===================================================
 // Generar QR de enrollment (SIN CAMBIOS)
 // ===================================================
-async function createEnrollmentToken() {
-  const credentialsJson = Buffer.from(
-    process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64,
-    'base64'
-  ).toString('utf8');
+exports.generateEnrollmentQR = async (req, res) => {
+  const client = await pool.connect();
 
-  const credentials = JSON.parse(credentialsJson);
+  try {
+    const resellerId = req.user.id;
 
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ['https://www.googleapis.com/auth/androidmanagement'],
-  });
+    await client.query('BEGIN');
 
-  const androidManagement = google.androidmanagement({
-    version: 'v1',
-    auth,
-  });
+    const availableLicense = await client.query(`
+      SELECT * FROM licenses
+      WHERE reseller_id = $1 AND status = 'DISPONIBLE'
+      LIMIT 1
+    `, [resellerId]);
 
-  const enterpriseName = process.env.ANDROID_ENTERPRISE_NAME;
+    if (availableLicense.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No hay licencias disponibles' });
+    }
 
-  const res = await androidManagement.enterprises.enrollmentTokens.create({
-    parent: enterpriseName,
-    requestBody: {
-      policyName: `${enterpriseName}/policies/default`,
-      allowPersonalUsage: false,
-      duration: '86400s', // 24 horas
-    },
-  });
+    const license = availableLicense.rows[0];
 
-  return {
-    value: res.data.value,
-    qrCode: res.data.qrCode,
-  };
-}
+    const enrollmentData = await createEnrollmentToken();
+
+    const token = enrollmentData.value;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await client.query(`
+      INSERT INTO enrollment_tokens (token, reseller_id, license_id, expires_at)
+      VALUES ($1, $2, $3, $4)
+    `, [token, resellerId, license.id, expiresAt]);
+
+    await client.query('COMMIT');
+
+    const qrImageBase64 = await QRCode.toDataURL(enrollmentData.qrCode, {
+      errorCorrectionLevel: 'L',
+      width: 512,
+      margin: 1
+    });
+
+    res.json({
+      message: 'QR generado exitosamente',
+      token,
+      qr_code: qrImageBase64,
+      expires_at: expiresAt,
+      license_key: license.license_key,
+      enrollment_url: `https://enterprise.google.com/android/enroll?et=${token}`
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error generando QR:', error);
+    res.status(500).json({
+      error: 'Error generando QR',
+      details: error.message
+    });
+  } finally {
+    client.release();
+  }
+};
 
 // ===================================================
 // Obtener dispositivos del reseller (SIN CAMBIOS)

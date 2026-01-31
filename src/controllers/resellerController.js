@@ -6,7 +6,6 @@
 // ===================================================
 
 const pool = require('../config/database');
-const { createEnrollmentToken } = require('../utils/androidManagement');
 const QRCode = require('qrcode');
 const { google } = require('googleapis');
 const { sendLockCommand, sendUnlockCommand, requestLocation, sendRebootCommand } = require('../utils/fcmHelper');

@@ -602,39 +602,70 @@ exports.releaseDevice = async (req, res) => {
   try {
     const { id } = req.params;
     const resellerId = req.user.id;
-
+    
     await client.query('BEGIN');
-
+    
     const deviceResult = await client.query(
       'SELECT * FROM devices WHERE id = $1 AND reseller_id = $2',
       [id, resellerId]
     );
-
+    
     if (deviceResult.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Dispositivo no encontrado' });
     }
-
+    
     const device = deviceResult.rows[0];
-
+    let removedFromEnterprise = false;
+    
+    // ✅ Eliminar dispositivo de Android Management API
+    if (device.google_device_name) {
+      try {
+        const androidManagement = await getAndroidManagementClient();
+        
+        console.log('🗑️ Eliminando dispositivo de Android Management:', device.google_device_name);
+        
+        await androidManagement.enterprises.devices.delete({
+          name: device.google_device_name
+        });
+        
+        console.log('✅ Dispositivo eliminado de Android Management API');
+        removedFromEnterprise = true;
+        
+      } catch (error) {
+        console.error('⚠️ Error eliminando de Android Management:', error.message);
+        // Continuar aunque falle
+      }
+    }
+    
+    // Actualizar licencia a VINCULADA
     await client.query(`
       UPDATE licenses 
       SET status = 'VINCULADA', device_imei = $1
       WHERE id = $2
     `, [device.imei, device.license_id]);
-
+    
+    // Actualizar dispositivo a LIBERADO y limpiar google_device_name
     await client.query(
-      'UPDATE devices SET status = $1 WHERE id = $2',
+      'UPDATE devices SET status = $1, google_device_name = NULL WHERE id = $2',
       ['LIBERADO', id]
     );
-
+    
+    // Limpiar token FCM
+    await client.query(
+      'DELETE FROM device_fcm_tokens WHERE device_id = $1',
+      [id]
+    );
+    
     await client.query('COMMIT');
-
+    
     res.json({
-      message: 'Dispositivo liberado exitosamente',
+      message: 'Dispositivo liberado exitosamente y eliminado de Android Management',
       device_id: id,
-      imei: device.imei
+      imei: device.imei,
+      removed_from_enterprise: removedFromEnterprise  // ✅ Ahora correcto
     });
+    
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error liberando dispositivo:', error);
@@ -643,6 +674,7 @@ exports.releaseDevice = async (req, res) => {
     client.release();
   }
 };
+
 
 exports.getDeviceLocationHistory = async (req, res) => {
   try {

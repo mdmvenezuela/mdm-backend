@@ -50,7 +50,7 @@ async function createEnrollmentToken() {
     parent: enterpriseName,
     requestBody: {
       policyName: `${enterpriseName}/policies/default`,
-      allowPersonalUsage: false,
+      allowPersonalUsage: PERSONAL_USAGE_DISALLOWED,
       duration: '86400s', // 24 horas
     },
   });

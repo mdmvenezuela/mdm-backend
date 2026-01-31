@@ -26,7 +26,7 @@ async function initAndroidManagement() {
   return androidManagement;
 }
 
-exports.createEnrollmentToken = async () => {
+async function createEnrollmentToken() {
   const credentialsJson = Buffer.from(
     process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64,
     'base64'
@@ -51,15 +51,15 @@ exports.createEnrollmentToken = async () => {
     requestBody: {
       policyName: `${enterpriseName}/policies/default`,
       allowPersonalUsage: false,
-      duration: '86400s'
-    }
+      duration: '86400s', // 24 horas
+    },
   });
 
   return {
     value: res.data.value,
-    qrCode: res.data.qrCode
+    qrCode: res.data.qrCode,
   };
-};
+}
 
 module.exports = {
   initAndroidManagement,

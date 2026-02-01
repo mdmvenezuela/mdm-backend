@@ -28,4 +28,6 @@ router.post('/fcm-token', deviceController.registerFcmToken);
 // Validar código de desbloqueo
 router.post('/validate-unlock', deviceController.validateUnlock);
 
+router.get('/device/by-imei', deviceController.getDeviceByImei);
+
 module.exports = router;

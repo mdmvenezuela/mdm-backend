@@ -69,6 +69,16 @@ app.post('/api/webhook/android-enterpris', (req, res) => {
 const policyRoutes = require('./routes/policies');
 app.use('/api', policyRoutes);
 
+// ✅ NUEVO: Servir archivos estáticos (APK)
+app.use('/downloads', express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.apk')) {
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="mdm-device-manager.apk"');
+    }
+  }
+}));
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', superAdminRoutes);

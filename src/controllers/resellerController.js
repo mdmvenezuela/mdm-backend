@@ -76,6 +76,91 @@ exports.getDashboard = async (req, res) => {
 };
 
 // ===================================================
+// ✨ NUEVO: Generar QR con descarga directa de APK (DEVICE OWNER)
+// ===================================================
+exports.generateEnrollmentQRDirect = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const resellerId = req.user.id;
+    await client.query('BEGIN');
+
+    // Verificar licencias disponibles
+    const availableLicense = await client.query(`
+      SELECT * FROM licenses 
+      WHERE reseller_id = $1 AND status = 'DISPONIBLE'
+      LIMIT 1
+    `, [resellerId]);
+
+    if (availableLicense.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No hay licencias disponibles' });
+    }
+
+    const license = availableLicense.rows[0];
+    
+    // Generar token único
+    const token = `ET_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await client.query(`
+      INSERT INTO enrollment_tokens (token, reseller_id, license_id, expires_at)
+      VALUES ($1, $2, $3, $4)
+    `, [token, resellerId, license.id, expiresAt]);
+
+    await client.query('COMMIT');
+
+    // ✅ QR PARA DEVICE OWNER CON DESCARGA DIRECTA
+    const qrData = {
+      "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.solvenca.mdm/.receivers.DeviceAdminReceiver",
+      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": "https://solvenca.lat/downloads/mdm-device-manager.apk",
+      "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
+      "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
+      "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
+        "enrollment_token": token,
+        "reseller_id": resellerId.toString(),
+        "license_id": license.id.toString()
+      }
+    };
+
+    const qrContent = JSON.stringify(qrData);
+    const qrImageBase64 = await QRCode.toDataURL(qrContent, {
+      errorCorrectionLevel: 'L',
+      type: 'image/png',
+      width: 512,
+      margin: 1
+    });
+
+    res.json({
+      message: 'QR generado para Device Owner (Descarga Directa)',
+      token: token,
+      qr_code: qrImageBase64,
+      expires_at: expiresAt,
+      license_key: license.license_key,
+      apk_url: 'https://solvenca.lat/downloads/mdm-device-manager.apk',
+      method: 'DIRECT_APK_DOWNLOAD',
+      instructions: [
+        '1. Factory reset al dispositivo',
+        '2. En pantalla de bienvenida, tocar 6 veces en el mismo lugar',
+        '3. Conectar a WiFi',
+        '4. Escanear este QR',
+        '5. El APK se descargará directamente',
+        '6. La app se instalará como Device Owner',
+        '7. ✅ Dispositivo completamente gestionado'
+      ]
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error generando QR directo:', error);
+    res.status(500).json({ 
+      error: 'Error generando QR',
+      details: error.message 
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// ===================================================
 // Generar QR de enrollment (SIN CAMBIOS)
 // ===================================================
 exports.generateEnrollmentQR = async (req, res) => {

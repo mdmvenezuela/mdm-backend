@@ -125,6 +125,46 @@ exports.registerDevice = async (req, res) => {
   }
 };
 
+
+// ===================================================
+// NUEVO: Buscar dispositivo por IMEI
+// ===================================================
+exports.getDeviceByImei = async (req, res) => {
+  try {
+    const { imei } = req.query;
+
+    if (!imei) {
+      return res.status(400).json({ error: 'IMEI requerido' });
+    }
+
+    console.log(`🔍 Buscando dispositivo con IMEI: ${imei}`);
+
+    const result = await pool.query(
+      'SELECT id, reseller_id, status, client_name FROM devices WHERE imei = $1',
+      [imei]
+    );
+
+    if (result.rows.length === 0) {
+      console.log(`⚠️ Dispositivo con IMEI ${imei} no encontrado`);
+      return res.status(404).json({ error: 'Dispositivo no encontrado' });
+    }
+
+    const device = result.rows[0];
+
+    console.log(`✅ Dispositivo encontrado - ID: ${device.id}`);
+
+    res.json({
+      device_id: device.id,
+      reseller_id: device.reseller_id,
+      status: device.status,
+      client_name: device.client_name
+    });
+  } catch (error) {
+    console.error('Error buscando dispositivo por IMEI:', error);
+    res.status(500).json({ error: 'Error buscando dispositivo' });
+  }
+};
+
 // ===================================================
 // NUEVO: Registrar/Actualizar token FCM
 // ===================================================

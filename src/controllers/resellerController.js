@@ -87,6 +87,32 @@ exports.generateEnrollmentQR = async (req, res) => {
         const APK_DOWNLOAD_URL = "https://solvenca.lat/downloads/mdm-device-manager.apk";
         const PACKAGE_NAME = "com.solvenca.mdm";
         const ADMIN_COMPONENT = "com.solvenca.mdm/.receivers.DeviceAdminReceiver";
+        const resellerId = req.user.id;
+
+        // Verificar licencias disponibles
+    const availableLicense = await client.query(`
+      SELECT * FROM licenses 
+      WHERE reseller_id = $1 AND status = 'DISPONIBLE'
+      LIMIT 1
+    `, [resellerId]);
+
+    if (availableLicense.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No hay licencias disponibles' });
+    }
+
+    const license = availableLicense.rows[0];
+    
+    // Generar token único
+    const token = `ET_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await client.query(`
+      INSERT INTO enrollment_tokens (token, reseller_id, license_id, expires_at)
+      VALUES ($1, $2, $3, $4)
+    `, [token, resellerId, license.id, expiresAt]);
+
+    await client.query('COMMIT');
 
         /**
          * ⚠️ SHA256 DEL APK (OBLIGATORIO)
@@ -111,7 +137,13 @@ exports.generateEnrollmentQR = async (req, res) => {
 
             "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
 
-            "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true
+            "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
+            "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
+        "enrollment_token": token,
+        "reseller_id": resellerId.toString(),
+        "license_id": license.id.toString()
+      }
+            "expires_at": expiresAt
         };
 
         /**

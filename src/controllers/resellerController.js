@@ -80,10 +80,12 @@ exports.getDashboard = async (req, res) => {
 // ✨ NUEVO: Generar QR con descarga directa de APK (DEVICE OWNER)
 // ===================================================
 exports.generateEnrollmentQR = async (req, res) => {
+  const client = await pool.connect();
     try {
         /**
          * 🔐 CONFIGURACIÓN BASE (AJUSTA SOLO ESTOS VALORES)
          */
+      await client.query('BEGIN');
         const APK_DOWNLOAD_URL = "https://solvenca.lat/downloads/mdm-device-manager.apk";
         const PACKAGE_NAME = "com.solvenca.mdm";
         const ADMIN_COMPONENT = "com.solvenca.mdm/.receivers.DeviceAdminReceiver";
@@ -170,12 +172,15 @@ exports.generateEnrollmentQR = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ Error generando QR MDM:", error);
-        return res.status(500).json({
-            success: false,
-            message: "Error generando QR de enrolamiento"
-        });
-    }
+    await client.query('ROLLBACK');
+    console.error("❌ Error generando QR MDM:", error);
+    return res.status(500).json({
+        success: false,
+        message: "Error generando QR de enrolamiento"
+    });
+} finally {
+    client.release();
+}
 };
 
 

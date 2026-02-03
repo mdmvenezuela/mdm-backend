@@ -173,7 +173,7 @@ exports.generateEnrollmentQR = async (req, res) => {
 
     } catch (error) {
     await client.query('ROLLBACK');
-    console.error("❌ Error generando QR MDM:", error);
+    console.error("❌ Error generando QR MDMSMART:", error);
     return res.status(500).json({
         success: false,
         message: "Error generando QR de enrolamiento"

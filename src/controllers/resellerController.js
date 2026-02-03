@@ -8,6 +8,7 @@
 const pool = require('../config/database');
 const { createEnrollmentToken } = require('../utils/androidManagement');
 const QRCode = require('qrcode');
+const crypto = require("crypto");
 const { google } = require('googleapis');
 const { sendLockCommand, sendUnlockCommand, requestLocation, sendRebootCommand } = require('../utils/fcmHelper');
 const { createUnlockCode, getActiveUnlockCode } = require('../utils/unlockCodesHelper');
@@ -79,85 +80,70 @@ exports.getDashboard = async (req, res) => {
 // ✨ NUEVO: Generar QR con descarga directa de APK (DEVICE OWNER)
 // ===================================================
 exports.generateEnrollmentQR = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const resellerId = req.user.id;
-    await client.query('BEGIN');
+    try {
+        /**
+         * 🔐 CONFIGURACIÓN BASE (AJUSTA SOLO ESTOS VALORES)
+         */
+        const APK_DOWNLOAD_URL = "https://solvenca.lat/downloads/mdm-device-manager.apk";
+        const PACKAGE_NAME = "com.solvenca.mdm";
+        const ADMIN_COMPONENT = "com.solvenca.mdm/.receivers.DeviceAdminReceiver";
 
-    // Verificar licencias disponibles
-    const availableLicense = await client.query(`
-      SELECT * FROM licenses 
-      WHERE reseller_id = $1 AND status = 'DISPONIBLE'
-      LIMIT 1
-    `, [resellerId]);
+        /**
+         * ⚠️ SHA256 DEL APK (OBLIGATORIO)
+         * Este valor DEBE coincidir con el APK firmado
+         */
+        const APK_SIGNATURE_SHA256 = "ee5250861a0d8ff0ee610c1fc39f20e703c639e8fd60c1655b9880947dc4e869";
 
-    if (availableLicense.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'No hay licencias disponibles' });
+        /**
+         * 📦 PAYLOAD OFICIAL ANDROID ENTERPRISE
+         */
+        const provisioningPayload = {
+            "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": ADMIN_COMPONENT,
+
+            "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION":
+                APK_DOWNLOAD_URL,
+
+            "android.app.extra.PROVISIONING_DEVICE_ADMIN_SIGNATURE_CHECKSUM":
+                APK_SIGNATURE_SHA256,
+
+            "android.app.extra.PROVISIONING_MODE":
+                "android.app.extra.PROVISIONING_MODE_FULLY_MANAGED_DEVICE",
+
+            "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
+
+            "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true
+        };
+
+        /**
+         * 🔄 CONVERTIMOS A STRING (ANDROID REQUIERE JSON PLANO)
+         */
+        const qrPayloadString = JSON.stringify(provisioningPayload);
+
+        /**
+         * 🧾 GENERAMOS QR BASE64 (IDEAL PARA FRONTEND)
+         */
+        const qrCodeBase64 = await QRCode.toDataURL(qrPayloadString, {
+            errorCorrectionLevel: "M",
+            margin: 2,
+            width: 350
+        });
+
+        /**
+         * 📤 RESPUESTA
+         */
+        return res.status(200).json({
+            success: true,
+            qr: qrCodeBase64,
+            payload: provisioningPayload
+        });
+
+    } catch (error) {
+        console.error("❌ Error generando QR MDM:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Error generando QR de enrolamiento"
+        });
     }
-
-    const license = availableLicense.rows[0];
-    
-    // Generar token único
-    const token = `ET_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    await client.query(`
-      INSERT INTO enrollment_tokens (token, reseller_id, license_id, expires_at)
-      VALUES ($1, $2, $3, $4)
-    `, [token, resellerId, license.id, expiresAt]);
-
-    await client.query('COMMIT');
-
-    // ✅ QR PARA DEVICE OWNER CON DESCARGA DIRECTA
-    const qrData = {
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.solvenca.mdm/.receivers.DeviceAdminReceiver",
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": "https://solvenca.lat/downloads/mdm-device-manager.apk",
-      "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": false,
-      "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
-      "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
-        "enrollment_token": token,
-        "reseller_id": resellerId.toString(),
-        "license_id": license.id.toString()
-      }
-    };
-
-    const qrContent = JSON.stringify(qrData);
-    const qrImageBase64 = await QRCode.toDataURL(qrContent, {
-      errorCorrectionLevel: 'L',
-      type: 'image/png',
-      width: 512,
-      margin: 1
-    });
-
-    res.json({
-      message: 'QR generado para Device Owner (Descarga Directa)',
-      token: token,
-      qr_code: qrImageBase64,
-      expires_at: expiresAt,
-      license_key: license.license_key,
-      apk_url: 'https://solvenca.lat/downloads/mdm-device-manager.apk',
-      method: 'DIRECT_APK_DOWNLOAD',
-      instructions: [
-        '1. Factory reset al dispositivo',
-        '2. En pantalla de bienvenida, tocar 6 veces en el mismo lugar',
-        '3. Conectar a WiFi',
-        '4. Escanear este QR',
-        '5. El APK se descargará directamente',
-        '6. La app se instalará como Device Owner',
-        '7. ✅ Dispositivo completamente gestionado'
-      ]
-    });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Error generando QR directo:', error);
-    res.status(500).json({ 
-      error: 'Error generando QR',
-      details: error.message 
-    });
-  } finally {
-    client.release();
-  }
 };
 
 

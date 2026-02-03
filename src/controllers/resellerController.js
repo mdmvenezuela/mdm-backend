@@ -142,7 +142,7 @@ exports.generateEnrollmentQR = async (req, res) => {
         "enrollment_token": token,
         "reseller_id": resellerId.toString(),
         "license_id": license.id.toString()
-      }
+      },
             "expires_at": expiresAt
         };
 

@@ -86,7 +86,7 @@ exports.generateEnrollmentQR = async (req, res) => {
          * 🔐 CONFIGURACIÓN BASE (AJUSTA SOLO ESTOS VALORES)
          */
       await client.query('BEGIN');
-        const APK_DOWNLOAD_URL = "https://solvenca.lat/downloads/mdm-device-manager.apk";
+        const APK_DOWNLOAD_URL = "https://www.solvenca.lat/mdm-device-manager.apk";
         const PACKAGE_NAME = "com.solvenca.mdm";
         const ADMIN_COMPONENT = "com.solvenca.mdm/.receivers.DeviceAdminReceiver";
         const resellerId = req.user.id;

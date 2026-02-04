@@ -86,7 +86,7 @@ exports.generateEnrollmentQR = async (req, res) => {
          * 🔐 CONFIGURACIÓN BASE (AJUSTA SOLO ESTOS VALORES)
          */
       await client.query('BEGIN');
-        const APK_DOWNLOAD_URL = "https://www.solvenca.lat/mdm-device-manager-v1.apk";
+        const APK_DOWNLOAD_URL = "https://www.solvenca.lat/mdm-device-manager-v2.apk";
         const PACKAGE_NAME = "com.solvenca.mdm";
         const ADMIN_COMPONENT = "com.solvenca.mdm/.receivers.DeviceAdminReceiver";
         const resellerId = req.user.id;
@@ -120,7 +120,7 @@ exports.generateEnrollmentQR = async (req, res) => {
          * ⚠️ SHA256 DEL APK (OBLIGATORIO)
          * Este valor DEBE coincidir con el APK firmado
          */
-        const APK_SIGNATURE_SHA256 = "00f6dbb976e99929ed22f3d41cda264d28e4bd39719ad3d6f817b086a8867c6f";
+        const APK_SIGNATURE_SHA256 = "7lJQhhoNj_DuYQwfw58g5wPGOej9YMFlW5iAlH3E6Gk";
 
         /**
          * 📦 PAYLOAD OFICIAL ANDROID ENTERPRISE

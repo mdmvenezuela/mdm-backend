@@ -120,7 +120,7 @@ exports.generateEnrollmentQR = async (req, res) => {
          * ⚠️ SHA256 DEL APK (OBLIGATORIO)
          * Este valor DEBE coincidir con el APK firmado
          */
-        const APK_SIGNATURE_SHA256 = "ee5250861a0d8ff0ee610c1fc39f20e703c639e8fd60c1655b9880947dc4e869";
+        const APK_SIGNATURE_SHA256 = "00f6dbb976e99929ed22f3d41cda264d28e4bd39719ad3d6f817b086a8867c6f";
 
         /**
          * 📦 PAYLOAD OFICIAL ANDROID ENTERPRISE

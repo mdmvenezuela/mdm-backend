@@ -143,8 +143,7 @@ exports.generateEnrollmentQR = async (req, res) => {
             "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
         "enrollment_token": token,
         "reseller_id": resellerId.toString(),
-        "license_id": license.id.toString(),
-        "license_key": license.license_key.toString()
+        "license_id": license.id.toString()
       },
             "expires_at": expiresAt
         };
@@ -169,10 +168,7 @@ exports.generateEnrollmentQR = async (req, res) => {
         return res.status(200).json({
             success: true,
             qr: qrCodeBase64,
-            payload: provisioningPayload,
-            token: token,
-            license_key: license.license_key,
-            expires_at: expiresAt
+            payload: provisioningPayload
         });
 
     } catch (error) {
